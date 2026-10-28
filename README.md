@@ -1,4 +1,4 @@
-# GANDALF
+# 🧙 GANDALF
 
 **G**rounded **A**rchitecture, **N**arrow **D**iffs, **A**gent-**L**ed **F**low
 
