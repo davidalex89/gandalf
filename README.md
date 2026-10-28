@@ -1,4 +1,6 @@
-# 🧙 GANDALF
+<p align="center"><img src="src/gandalf/assets/gandalf.png" alt="" width="128"></p>
+
+# GANDALF
 
 **G**rounded **A**rchitecture, **N**arrow **D**iffs, **A**gent-**L**ed **F**low
 
