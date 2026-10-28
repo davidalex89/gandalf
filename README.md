@@ -1,4 +1,4 @@
-<p align="center"><img src="src/gandalf/assets/gandalf.png" alt="" width="128"></p>
+<p align="right"><img src="src/gandalf/assets/gandalf.png" alt="" width="128"></p>
 
 # GANDALF
 
