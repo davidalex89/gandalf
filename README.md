@@ -27,18 +27,37 @@ repo's own rules, as found in the repo.
 - **Model-agnostic, tailored to Claude Code.** The core never calls a model. It hands
   out prompts and validates what comes back, so any model can drive it.
 
-The full design, with every decision and why it was made, is in [DESIGN.md](DESIGN.md).
-
 ## Requirements
 
-- Python 3.11 or newer. No other runtime dependencies.
-- Optional, for `plan.pdf` and `plan.html`: the `document` extra, which is
-  [Python-Markdown](https://python-markdown.github.io) and [WeasyPrint](https://weasyprint.org).
-  WeasyPrint needs the Pango library: `brew install pango` on macOS, and its
-  [installation guide](https://doc.courtbouillon.org/weasyprint/stable/first_steps.html)
-  covers other systems. Without them you get everything except those two files.
+- Python 3.11 or newer. No other runtime dependencies, and no third-party packages.
 - git, for the target repo. Without it GANDALF runs in [reduced mode](#reduced-mode-non-git-folders).
 - Claude Code, to use the plugin (the main way to run it).
+
+## Status: what has been exercised
+
+Everything in GANDALF is tested in the unit suite, but only part of it has been through a
+real run on a real repository, and that line is worth knowing. From 1.0 the plan folder's
+layout, the fourteen sections of a PR spec, `plan.json` with its `schema_version` and the
+command line change only in a major version; prompts, checks and the experimental features
+below may change in a minor one.
+
+**Exercised on real repositories** (Python/FastAPI, Go, Django and Node/Vue targets, six
+planning runs, two of them built end to end from the specs by fresh agents with no
+questions): the seven stages from scan to render, the deterministic checks and the
+rejection loop, the security review and its required fixes, the design checkpoint
+including a rejection and re-run, the boundary check routing a finding back to design,
+contracts quoted across PRs, and the inert-then-enabling order.
+
+**Experimental: never fired in a real run.** Precursors (`X-n`), external dependencies
+and client handoffs (`E-n`, `requests/`, `handoffs/`), feature flags and expand/contract
+pairs, verification runs in a worktree, don't-know proposals, delegated questions,
+restructuring pauses, the light tier, `gandalf repair` and `gandalf monitor`. They are
+kept as designed and will change when a run shows what they get wrong.
+
+**One review pass is not a gate.** On the same prompt and the same design, the boundary
+check found a data leak in one run and missed it in the next. A plan that passes its
+checks has been reviewed, not cleared: the specs that touch who can see what deserve your
+own read, and a second review pass with a fresh context is cheap insurance.
 
 ## Install
 
@@ -59,10 +78,8 @@ uv tool install --editable /path/to/gandalf
 (`pipx install --editable /path/to/gandalf` works too, or run `/path/to/gandalf/bin/gandalf`
 directly.)
 
-**For `plan.pdf` and `plan.html`**, add the `document` extra to the Python that runs
-GANDALF: `uv tool install --editable "/path/to/gandalf[document]"`. The plugin's `bin/gandalf` uses
-`$GANDALF_PYTHON` if you set it, else a `.venv` inside the GANDALF folder, else
-`python3`, so install WeasyPrint into whichever of those it finds.
+The plugin's `bin/gandalf` uses `$GANDALF_PYTHON` if you set it, else a `.venv` inside the
+GANDALF folder, else `python3`.
 
 ## Use it in Claude Code
 
@@ -99,9 +116,17 @@ rather than the whole conversation. With you, it goes through these stages:
    pause (below). Each security fix is built into the PR that needs it, in its changes,
    steps and "done when".
 6. **Boundary check.** A separate subagent checks what's true after each PR merges and
-   before the next lands. A gap sends the PRs back to be re-planned, and the design stands.
-   Until this check passes, the PR sequence is a draft.
+   before the next lands. A gap sends the PRs back to be re-planned with the design
+   standing; a gap only a design change closes goes back to the design, its review and
+   the checkpoint first. Until this check passes, the PR sequence is a draft.
 7. **Render.** The plan is written to the plan folder.
+
+A review can send the plan back more than once. The first time it does so without asking.
+From the second round on, each finding that would send the plan back comes to you as a
+choice: **rerun**, which does what the review asks and reviews again, or **carry**, which
+keeps the plan and hands the finding on. A carried security finding becomes a required fix
+a PR builds in; a carried boundary gap is written on the PR it follows, for the builder and
+for your own review. The next-step text says which round it is.
 
 GANDALF also stops and asks you whenever it would:
 - add a new dependency
@@ -156,14 +181,12 @@ with `GANDALF_HOME`. GANDALF refuses any `--out` inside the target repo.
 | `repo-context.md` | What the scan found: stack, layers, conventions, the repo's own rules, run/test commands, contradictions. All with file evidence |
 | `design.md` | Decisions (with sources, alternatives and consequences), contracts (`C-n`), inventory of what's new (`N-n`), precursors (`X-n`), the breakdown, the slice map |
 | `security-review.md` | What the separate review checked, abuse cases, findings and what each changed, and the boundary check between PRs |
-| `sequence.md` | PR order, parallel lanes, deploy/migration steps, breaking-change mitigations, flags |
+| `sequence.md` | PR order, the grid of lanes and waves, deploy/migration steps, breaking-change mitigations, flags |
 | `prs/pr-NN-<name>.md` | One self-contained spec per PR |
 | `plan.json` | The same plan as structured data, versioned (`schema_version`) |
-| `plan.pdf` | `plan.md` typeset as a PDF. The default, and it needs the `document` extra |
-| `plan.html` | Instead of the PDF, with `render --format artifact`: `plan.md` as a page to publish as a Claude artifact |
 
 **Light tier.** This applies when the plan has at most two PRs and no breaking change,
-schema change, new dependency or external dependency. You get `plan.md`, `technical.md`, `prs/` and `plan.json` (plus `plan.pdf` or `plan.html`).
+schema change, new dependency or external dependency. You get `plan.md`, `technical.md`, `prs/` and `plan.json`.
 `technical.md` holds the intent, repo context, design, security review (with the
 boundary check) and order of operations in one file. PR specs are identical in both tiers.
 
@@ -207,10 +230,12 @@ agent never has to wonder whether something was forgotten:
 
 The header shows:
 - the type (inert/enabling/precursor)
-- the lane: PRs in the same lane can be built in parallel
+- the lane, a chain one builder can take end to end, and the wave, which says what must
+  have merged before it can start
 - risk tags
-- a size band: Small up to ~150 production lines, Medium up to ~350, Large up to ~500
-  (needs a stated reason), Over
+- a size band, the planner's estimate shown for the reader: Small up to ~150 production
+  lines, Medium up to ~350, Large up to ~500, Over. A PR of one leaf says why it stays
+  separate; a PR of more than ten files says why it stays whole
 - dependencies.
 
 ### Building from the plan
@@ -232,8 +257,17 @@ each capability is switched on, but nothing in GANDALF waits for it.
 
 ### When reality doesn't match
 
-If a builder hits section 14, it writes a `GANDALF MISMATCH REPORT`. Repair the unbuilt
-part of the plan with:
+Section 14 of every spec has two tiers. A small fix inside the PR's own files that leaves
+every contract, decision and starting-state fact as written, and adds no dependency or data
+change, is the builder's to make: it carries on and lists the fix in a `GANDALF DEVIATION
+NOTE` handed to you with the finished PR. Keep those notes with the plan folder; they are
+your record of what the specs didn't foresee, and the plan doesn't change. Hand each later
+builder the notes from the PRs its spec depends on: a note can move where something lives
+(a style block, a helper), and the later spec was written before that happened.
+
+Anything further, a starting-state fact that isn't true, a contract that can't be provided as
+written, a file not listed, a new dependency or data change, stops the builder, which writes a
+`GANDALF MISMATCH REPORT`. Repair the unbuilt part of the plan with:
 
 ```bash
 gandalf repair --out <plan folder> --report mismatch.md --merged PR-01,PR-02 [--from context|design|decompose|sequence]
@@ -352,8 +386,8 @@ GANDALF works on folders that aren't git repositories, with less available:
   the plan was made against.
 - **Ordered change sets** instead of pull requests.
 
-`plan.md` opens with a banner saying exactly what's unavailable. No live run has used
-reduced mode yet, so treat it as tested only by GANDALF's own test suite.
+`plan.md` opens with a banner saying exactly what's unavailable. Reduced mode is covered
+by GANDALF's own test suite only.
 
 ## Commands
 
@@ -363,9 +397,9 @@ reduced mode yet, so treat it as tested only by GANDALF's own test suite.
 | `gandalf run` | Plans start to finish with a model command, asking you questions in the terminal |
 | `gandalf prompt [stage]` | Prints the prompt for the next stage, or a given one. `--excerpts` adds repo files for models that can't read the repo |
 | `gandalf submit <stage> FILE` | Validates and stores a stage's output, your answers, or your design approval |
-| `gandalf render` | Writes the plan once every stage is complete and every check passes. `--format pdf` (default), `artifact` or `markdown` picks the styled copy of `plan.md` |
-| `gandalf repair` | Repairs the unbuilt part of a plan after a mismatch report. Not yet used in a live run |
-| `gandalf deliver E-n` | Records what another team built for an external dependency, re-planning if it differs from the request. Not yet used in a live run |
+| `gandalf render` | Writes the plan once every stage is complete and every check passes |
+| `gandalf repair` | Repairs the unbuilt part of a plan after a mismatch report. Covered by the test suite only |
+| `gandalf deliver E-n` | Records what another team built for an external dependency, re-planning if it differs from the request. Covered by the test suite only |
 | `gandalf monitor …` | Optional: compares a PR's branch with its spec and reconciles changes (`on`, `off`, `check`, `prompt`, `submit`, `approve`, `reject`, `history`) |
 
 Every rejected submission, acceptance, value normalisation and internal error is logged
@@ -381,13 +415,10 @@ older GANDALF, in an earlier format, isn't read: start it again with `gandalf sc
 
 ```bash
 python3.11 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest
+.venv/bin/pip install -e .
 ```
 
 What the pieces are:
-- **Tests** use small sample repos in `tests/fixtures/` and a complete sample plan in
-  `tests/golden/py_app/`.
 - **The core** is in `src/gandalf/`.
 - **Prompt templates** are in `src/gandalf/prompts/`.
 - **The Claude Code plugin** is the repo root: `.claude-plugin/`, `skills/`, `agents/`,

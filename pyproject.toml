@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gandalf"
+version = "1.0.0"
+description = "Grounded Architecture, Narrow Diffs, Agent-Led Flow: turn a feature idea into sequenced, self-contained PR specs grounded in an existing codebase."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+gandalf = "gandalf.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gandalf = ["prompts/*.md", "assets/*.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["fixtures"]

@@ -1,0 +1,6 @@
+{
+  "name": "gandalf",
+  "version": "1.0.0",
+  "description": "Grounded Architecture, Narrow Diffs, Agent-Led Flow: plan a feature as sequenced, self-contained PR specs grounded in the codebase.",
+  "license": "Apache-2.0"
+}
