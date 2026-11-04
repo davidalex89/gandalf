@@ -1,7 +1,7 @@
-"""Planning progress in ``<plan folder>/.state/`` (DESIGN.md §11.2, D-50).
+"""Planning progress in ``<plan folder>/.state/``.
 
 Holds the scan, every stage's validated output, the designer's answers, question
-metrics (§5.3) and mismatch records (§5.10). Re-submitting a stage moves it and every
+metrics and mismatch records. Re-submitting a stage moves it and every
 later stage into ``history/`` so nothing is silently overwritten.
 """
 
@@ -19,7 +19,7 @@ from pathlib import Path
 from gandalf import SCHEMA_VERSION
 
 # The security review sees the design before the designer's checkpoint, so its fixes are
-# built into the PRs from the start; the boundary check looks at the states between PRs (D-149).
+# built into the PRs from the start; the boundary check looks at the states between PRs.
 STAGES = ("context", "intent", "design", "security", "approval", "decompose", "sequence", "boundary")
 MODEL_STAGES = tuple(s for s in STAGES if s != "approval")
 
@@ -42,11 +42,11 @@ def _write(path: Path, data) -> None:
 
 
 class PlanExistsError(Exception):
-    """The plan folder already holds a different feature's plan (D-179)."""
+    """The plan folder already holds a different feature's plan."""
 
 
 class OldPlanError(Exception):
-    """A plan written in an older format, which GANDALF no longer reads (D-141)."""
+    """A plan written in an older format, which GANDALF no longer reads."""
 
 
 class PlanState:
@@ -81,7 +81,7 @@ class PlanState:
             raise PlanExistsError(
                 f"{plan_dir} already holds a plan for '{existing.get('feature', {}).get('title', '?')}' "
                 "with a different feature text, and its finished stages would be taken as this feature's "
-                "(D-179). Give this feature its own folder with --out, or its own name with --title.")
+                ". Give this feature its own folder with --out, or its own name with --title.")
         state_dir.mkdir(parents=True, exist_ok=True)
         meta = existing
         if meta is None:
@@ -136,14 +136,22 @@ class PlanState:
     def _archive(self, name: str, reason: str) -> None:
         src = self.dir / "stages" / f"{name}.json"
         if src.exists():
-            dest = self.dir / "history" / f"{now().replace(':', '')}-{name}.json"
-            dest.parent.mkdir(exist_ok=True)
+            # microseconds, and never an existing name: two archives of one stage in the same
+            # second had overwritten the first. Older
+            # whole-second names still sort first.
+            history = self.dir / "history"
+            history.mkdir(exist_ok=True)
+            while True:
+                stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H%M%S.%f+0000")
+                dest = history / f"{stamp}-{name}.json"
+                if not dest.exists():
+                    break
             data = _read(src)
             _write(dest, {"stage": name, "archived": now(), "reason": reason, "data": data})
             src.unlink()
 
     def replace_stage(self, name: str, data: dict, reason: str) -> None:
-        """Replace one stage's output in place, keeping later stages (PR monitoring, §5.11).
+        """Replace one stage's output in place, keeping later stages (PR monitoring).
         The old output goes to ``history/`` like any other replaced one."""
         self._archive(name, reason)
         _write(self.dir / "stages" / f"{name}.json", data)
@@ -188,13 +196,13 @@ class PlanState:
         return [h["data"] for h in self.history("security")] + ([current] if current else [])
 
     def boundary_checks(self) -> list[dict]:
-        """Every boundary check so far, oldest first, the stored one last (D-159)."""
+        """Every boundary check so far, oldest first, the stored one last."""
         current = self.stage("boundary")
         return [h["data"] for h in self.history("boundary")] + ([current] if current else [])
 
     # --- stage submission -----------------------------------------------------------
     def request_review(self, reason: str) -> None:
-        """Ask for a fresh security review of an in-flight plan (PR monitoring, §5.11)
+        """Ask for a fresh security review of an in-flight plan (PR monitoring)
         without discarding the checkpoint, breakdown or sequence: merged PRs stay as they are."""
         self._archive("security", reason)
         self._set_status("security", "needs_rerun", reason=reason)
@@ -216,7 +224,7 @@ class PlanState:
                                              "text": data.get("notes", ""), "at": now()})
             self._mark_rerun("design", "designer did not approve the design")
         elif name == "approval" and data.get("notes", "").strip():
-            # approved with notes: they steer the breakdown and sequencing (D-82)
+            # approved with notes: they steer the breakdown and sequencing
             for later in ("decompose", "sequence"):
                 self.answers["guidance"].append({"stage": later, "from": "design checkpoint (approved with notes)",
                                                  "text": data["notes"], "at": now()})
@@ -225,7 +233,7 @@ class PlanState:
             if changes:
                 self._route("security", changes)
             elif in_place:
-                # the fixes of a re-review are placed again; merged PRs stay frozen (§5.11)
+                # the fixes of a re-review are placed again; merged PRs stay frozen
                 self.answers["guidance"].append({
                     "stage": "sequence", "from": "security re-review",
                     "text": "The security review ran again: build each of its fixes into a PR (`security`).",
@@ -237,7 +245,7 @@ class PlanState:
             self._route("boundary", data["findings"])
         self.save()
 
-    # --- a review sends the plan back (D-155, D-180) ---------------------------------
+    # --- a review sends the plan back ---------------------------------
     LOOPS = {"security": "design_from_security", "boundary": "replan_from_boundary"}
 
     def rounds(self) -> dict[str, int]:
@@ -246,7 +254,7 @@ class PlanState:
     def _route(self, review: str, findings: list[dict]) -> None:
         """Round one goes straight back. From round two the designer decides per finding:
         ``rerun`` as the review asks, or ``carry`` it as a requirement for the builder and keep
-        the plan (D-180). Neither loop has a bound otherwise."""
+        the plan. Neither loop has a bound otherwise."""
         loop = self.LOOPS[review]
         rounds = self.meta.setdefault("rounds", {})
         n = rounds[loop] = rounds.get(loop, 0) + 1
@@ -265,7 +273,7 @@ class PlanState:
                 "proposal": f.get("design_change") or f.get("replan"),
                 "why": [{"kind": "opinion",
                          "text": f"This is round {n} of the {review} review sending the plan back for {asks} "
-                                 "(D-180). rerun: do as it asks, with another review after. carry: keep the plan "
+                                 ". rerun: do as it asks, with another review after. carry: keep the plan "
                                  "and hand the finding on as a requirement, no re-run."}],
                 "alternative": ("carry: the finding becomes a required fix a PR builds in; the design stays as it is"
                                 if review == "security" else
@@ -284,8 +292,8 @@ class PlanState:
                     "text": reopened + f["design_change"], "at": now()})
             self._mark_rerun("design", f"security review requires design changes: {ids} (round {n})")
             return
-        # a gap between PRs is fixed by re-planning them, never by adding notes (D-149); a gap
-        # only a design change closes goes back to the design and its review first (D-155)
+        # a gap between PRs is fixed by re-planning them, never by adding notes; a gap
+        # only a design change closes goes back to the design and its review first
         for f in findings:
             text = (f"After {f['after']}: {f['summary']}. {f['replan']} (from boundary check {f['id']}). "
                     "Every state between PRs must be correct and expose nothing.")
@@ -305,7 +313,7 @@ class PlanState:
 
     def _apply_routes(self, review: str) -> None:
         """Every route pause of this review is decided: carry the carried findings in the stored
-        review and re-run for the rest, or move on when nothing re-runs (D-180)."""
+        review and re-run for the rest, or move on when nothing re-runs."""
         pending = [p for p in self.answers["pauses"].values()
                    if p["kind"] == "route" and p["stage"] == review and p["status"] == "resolved"
                    and not p.get("applied")]
@@ -320,7 +328,7 @@ class PlanState:
             if p["decision"] == "carry":
                 f["carried"] = {"round": n, "notes": p["notes"] or "", "at": now()}
                 if review == "security":
-                    # the change asked for becomes the requirement a PR builds in (D-149)
+                    # the change asked for becomes the requirement a PR builds in
                     f.setdefault("requirement", "Carried by the designer without a design change: " + f["design_change"])
                     f["carried"]["design_change"] = f.pop("design_change")
                     self.answers["guidance"].append({
@@ -432,13 +440,13 @@ class PlanState:
                 problems.append(f"{p['id']}: already resolved")
                 continue
             if pause["kind"] == "restructuring" and p["decision"] == "approved":
-                problems.append(f"{p['id']}: restructuring pauses take guidance, not approval (§6.4)")
+                problems.append(f"{p['id']}: restructuring pauses take guidance, not approval")
                 continue
             if pause["kind"] == "route" and p["decision"] not in ("rerun", "carry"):
-                problems.append(f"{p['id']}: a route pause takes rerun or carry, not {p['decision']} (D-180)")
+                problems.append(f"{p['id']}: a route pause takes rerun or carry, not {p['decision']}")
                 continue
             if pause["kind"] != "route" and p["decision"] in ("rerun", "carry"):
-                problems.append(f"{p['id']}: only a route pause takes {p['decision']} (D-180)")
+                problems.append(f"{p['id']}: only a route pause takes {p['decision']}")
                 continue
             pause.update(status="resolved", decision=p["decision"], notes=p.get("notes") or "",
                          resolved=now())
@@ -447,7 +455,7 @@ class PlanState:
                 continue
             touched.add(pause["stage"])
             # a dependency or architecture change approved after the design checkpoint changes
-            # the design, so the design and its review run again with the decision (D-155)
+            # the design, so the design and its review run again with the decision
             if (p["decision"] == "approved" and pause["kind"] in ("architecture_change", "new_dependency")
                     and pause["stage"] in ("decompose", "sequence")):
                 redesign.append((p["id"], pause))
@@ -484,7 +492,7 @@ class PlanState:
         self._refresh_status(stage)
         self.save()
 
-    # --- logging (D-67) ---------------------------------------------------------------
+    # --- logging ---------------------------------------------------------------
     def log(self, kind: str, **fields) -> dict:
         """Append one event to ``.state/log.jsonl``: every rejection, acceptance,
         normalisation and internal error is kept, so prompts can be refined from
@@ -501,6 +509,10 @@ class PlanState:
             return []
         return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
+    def rejections(self, stage: str) -> int:
+        """Rejections of ``stage`` in a row since it was last accepted."""
+        return self._attempt(stage) - 1
+
     def _attempt(self, stage: str) -> int:
         """1 + the rejections of ``stage`` since it was last accepted."""
         n = 0
@@ -513,14 +525,15 @@ class PlanState:
                 n += 1
         return n + 1
 
-    def record_rejection(self, stage: str, via: str, errors: list[str], data) -> dict:
+    def record_rejection(self, stage: str, via: str, errors: list[str], data, model: str | None = None) -> dict:
         raw = data if isinstance(data, str) else json.dumps(data, sort_keys=True, ensure_ascii=False)
         digest = hashlib.sha256(raw.encode()).hexdigest()[:12]
         saved = self.dir / "rejected" / f"{now().replace(':', '')}-{stage}-{digest}.json"
         saved.parent.mkdir(exist_ok=True)
         saved.write_text(raw)
+        extra = {"model": model} if model else {}
         return self.log("rejected", stage=stage, via=via, attempt=self._attempt(stage),
-                        errors=errors, digest=digest, saved=str(saved.relative_to(self.dir)))
+                        errors=errors, digest=digest, saved=str(saved.relative_to(self.dir)), **extra)
 
     @staticmethod
     def digest(data) -> str:
@@ -528,17 +541,17 @@ class PlanState:
         return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
     def record_acceptance(self, stage: str, via: str, normalised: list[str] | None = None,
-                          data=None, rerun_reason: str | None = None) -> dict:
+                          data=None, rerun_reason: str | None = None, model: str | None = None) -> dict:
         """Log an acceptance. ``duplicate`` marks output identical to an earlier accepted
-        submission of the same stage, e.g. a stale inbox file sent again (D-79)."""
+        submission of the same stage, e.g. a stale inbox file sent again."""
         digest = self.digest(data) if data is not None else None
         earlier = {e.get("digest") for e in self.log_entries()
                    if e["kind"] == "accepted" and e.get("stage") == stage}
         return self.log("accepted", stage=stage, via=via, attempt=self._attempt(stage),
                         normalised=normalised or [], digest=digest,
-                        # approvals and answers repeat legitimately (D-111)
+                        # approvals and answers repeat legitimately
                         duplicate=bool(digest and digest in earlier and stage in MODEL_STAGES),
-                        rerun_reason=rerun_reason)
+                        rerun_reason=rerun_reason, **({"model": model} if model else {}))
 
     def archive_inbox_file(self, path: Path, stage: str) -> Path | None:
         """Move an accepted file out of ``.state/inbox/`` so it can't be sent again."""
@@ -573,7 +586,7 @@ class PlanState:
                 attempts[e["stage"]] = max(attempts.get(e["stage"], 0), e.get("attempt", 1))
         patterns = Counter(self.error_pattern(err) for e in rejections for err in e.get("errors", []))
         # a pass is each time a stage's output was accepted (not counting duplicates), with
-        # the reason it had to be produced again (D-84)
+        # the reason it had to be produced again
         passes: dict[str, dict] = {}
         for e in entries:
             if e["kind"] == "accepted" and e["stage"] not in ("answers", "approval") and not e.get("duplicate"):

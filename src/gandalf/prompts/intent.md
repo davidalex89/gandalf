@@ -6,7 +6,12 @@ Normalise the designer's input (below) into an intent brief covering six areas:
 2. **outcomes** — what users can do when it's done (`O-1`, `O-2`, …)
 3. **out_of_scope** — what is explicitly not included
 4. **behaviours** — concrete behaviour examples, including edge cases (`B-1`, …)
-5. **constraints** — compatibility, performance, compliance, things that must not change
+5. **constraints** — compatibility, performance, compliance, things that must not change,
+   and what becomes of anything the feature replaces: when it adds a second way to hold or
+   do what the product already does, whether the old way stays or goes, and when. "Keeps
+   working" says how the old way behaves meanwhile, not whether it stays; if the
+   description doesn't say, ask, since the answer decides whether the work is one release
+   or several
 6. **decisions** and **unknowns** — decisions already made, and known unknowns
 
 Every item records its `source`: `input` (the feature description or supporting

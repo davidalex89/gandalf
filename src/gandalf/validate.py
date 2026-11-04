@@ -1,4 +1,4 @@
-"""Stage-level validation: structure, references and grounding (DESIGN.md §5, §11.2).
+"""Stage-level validation: structure, references and grounding.
 
 ``validate_stage`` is what ``gandalf submit`` runs. A stage output is stored only if it
 returns no errors.
@@ -15,7 +15,7 @@ from gandalf.schema import check
 from gandalf.schemas import CLIENT_FIELDS, INFRA_FIELDS, STAGE_SCHEMAS
 from gandalf.state import STAGES, PlanState
 
-# an import line in Python, JavaScript/TypeScript or Go: not part of a contract's surface (D-139)
+# an import line in Python, JavaScript/TypeScript or Go: not part of a contract's surface
 IMPORT_LINE = re.compile(r"""\s*(import\s+[\w{*(\"']|from\s+[\w.]+\s+import\s)""")
 
 
@@ -31,15 +31,15 @@ def _open_items(plan: PlanState, stage: str, data: dict, report: checks.Report) 
         where = f"pauses[{i}]"
         if pause["kind"] == "restructuring":
             if pause.get("proposal"):
-                report.errors.append(f"{where}: never propose restructuring; frame the options instead (§6.4)")
+                report.errors.append(f"{where}: never propose restructuring; frame the options instead")
             if not pause["options"]:
-                report.errors.append(f"{where}: a restructuring pause lists the options visible (§6.4)")
+                report.errors.append(f"{where}: a restructuring pause lists the options visible")
             if not pause["where"]:
-                report.errors.append(f"{where}: a restructuring pause cites where in the code (§6.4)")
+                report.errors.append(f"{where}: a restructuring pause cites where in the code")
         elif not pause.get("proposal"):
-            report.errors.append(f"{where}: state what is proposed and why (§6.2)")
+            report.errors.append(f"{where}: state what is proposed and why")
         if not pause["why"]:
-            report.errors.append(f"{where}: give evidence or a grounded opinion (§5.3)")
+            report.errors.append(f"{where}: give evidence or a grounded opinion")
     unknown = plan.unknown_questions(stage)
     for i, p in enumerate(data.get("proposals") or []):
         if p["question_id"] not in unknown:
@@ -67,7 +67,7 @@ def _cites_exist(repo: checks.RepoView, cites: list[tuple[str, str]], report: ch
 
 
 def _assumptions(plan: PlanState, data: dict, report: checks.Report) -> None:
-    """An assumption citing a question must cite one the designer delegated (D-96)."""
+    """An assumption citing a question must cite one the designer delegated."""
     delegated = {qid for qid, q in plan.answers["questions"].items() if q["status"] == "delegated"}
     for i, a in enumerate(data.get("assumptions") or []):
         if a.get("ref") and a["ref"] not in delegated:
@@ -81,7 +81,7 @@ def _require(plan: PlanState, *stages: str) -> list[str]:
 
 
 def _ref_status(plan: PlanState, ref: str) -> str:
-    """Why a decision's source ref can't be used, in plain words (first 0.6 eval, E-1)."""
+    """Why a decision's source ref can't be used, in plain words."""
     q = plan.answers["questions"].get(ref)
     if q is not None and q["status"] == "delegated":
         return (f"{ref} was delegated (\"decide it yourself\"), which isn't an answer: record the choice "
@@ -103,7 +103,7 @@ def validate_stage(plan: PlanState, stage: str, data: dict) -> checks.Report:
     if stage == "answers" or not isinstance(data, dict):
         return report
     # run the plan rules even when a few fields are malformed, so every problem comes back
-    # in one pass (D-105); if the output is too broken to check, say more checks will follow
+    # in one pass; if the output is too broken to check, say more checks will follow
     try:
         _check_content(plan, stage, data, report)
     except (KeyError, TypeError, AttributeError, IndexError, ValueError):
@@ -119,7 +119,7 @@ def _check_content(plan: PlanState, stage: str, data: dict, report: checks.Repor
     if order:
         report.errors += order
         return
-    if stage in ("design", "decompose", "sequence"):     # where new code is planned (D-120)
+    if stage in ("design", "decompose", "sequence"):     # where new code is planned
         report.errors += secrets.scan(data)
     _open_items(plan, stage, data, report)
     repo = checks.RepoView.for_plan(plan.meta["repo"])
@@ -165,7 +165,7 @@ def _check_content(plan: PlanState, stage: str, data: dict, report: checks.Repor
                     if q["status"] in ("answered", "accepted_proposal")}
         resolved_pauses = {pid for pid, p in plan.answers["pauses"].items() if p["status"] == "resolved"}
         # a decision may cite any finding that asked for a fix: a design change, or a requirement the
-        # design elaborates on a re-run (D-166); never one that was accepted or recorded as a limitation
+        # design elaborates on a re-run; never one that was accepted or recorded as a limitation
         design_findings = {f["id"] for r in plan.security_reviews() for f in r["findings"]
                            if f["response"] in ("mitigate", "eliminate")}
         boundary_findings = {f["id"] for r in plan.boundary_checks() for f in r["findings"] if f.get("design_change")}
@@ -186,6 +186,21 @@ def _check_content(plan: PlanState, stage: str, data: dict, report: checks.Repor
                                      f"for a design change (got {src['ref']})")
             if d["status"] == "superseded" and d.get("superseded_by") not in dec_ids:
                 report.errors.append(f"{d['id']}: superseded decisions name the decision that replaces them")
+        # the fate of what a change replaces is the designer's call
+        for i, x in enumerate(data["data_model"]):
+            r = x.get("replaces")
+            if not r:
+                continue
+            if not repo.exists(r["where"]):
+                report.errors.append(f"data_model[{i}]: replaces cites {r['where']}, which isn't in the repo")
+            if r["source"]["ref"] not in answered | resolved_pauses | {"intent", "checkpoint"}:
+                report.errors.append(
+                    f"data_model[{i}]: what becomes of {r['what']} is the designer's call, not the design's: "
+                    f"ask, or cite the answered question (Q-n), resolved pause (PA-n), 'intent' (the description "
+                    f"says it) or 'checkpoint' that settles it. {_ref_status(plan, r['source']['ref'])}")
+            if r["fate"] == "goes" and not (r.get("when") or "").strip():
+                report.errors.append(f"data_model[{i}]: {r['what']} goes, so say when: the release or step that "
+                                     "stops writing it and the one that removes it")
         clients = {e["id"] for e in data.get("external") or [] if checks.is_client(e)}
         for e in data.get("external") or []:
             if checks.is_client(e):
@@ -212,7 +227,7 @@ def _check_content(plan: PlanState, stage: str, data: dict, report: checks.Repor
                         report.errors.append(f"{e['id']}: after names {dep}, a client app, which never "
                                              "holds anything back")
             src = e["source"]
-            # ask before writing an external dependency down (D-91)
+            # ask before writing an external dependency down
             if src["kind"] == "designer" and src["ref"] not in answered:
                 report.errors.append(f"{e['id']}: source designer must reference an answered question (Q-n): "
                                      "ask the designer about it first (environments, what exists, owner, constraints)")
@@ -225,21 +240,21 @@ def _check_content(plan: PlanState, stage: str, data: dict, report: checks.Repor
         for c in data["contracts"]:
             if not c.get("files"):
                 report.errors.append(f"{c['id']}: name the files its code will live in (files), so GANDALF can "
-                                     "check the PR that exposes it changes one of them (D-138)")
+                                     "check the PR that exposes it changes one of them")
             if any(IMPORT_LINE.match(line) for line in c["body"].splitlines()):
                 report.errors.append(f"{c['id']}: leave imports out of a contract; it fixes the public surface "
-                                     "(names, signatures, types, shapes) and the repo's conventions decide imports (D-139)")
+                                     "(names, signatures, types, shapes) and the repo's conventions decide imports")
         for n in data["inventory"]:
             if n.get("contract") and n["contract"] not in contracts:
                 report.errors.append(f"{n['id']}: unknown contract {n['contract']}")
         cites = [(x["id"], x["where"]) for x in data["precursors"]]
         cites += [(f"suspected[{i}]", s["where"]) for i, s in enumerate(data["suspected"])]
         _cites_exist(repo, cites, report)
-        # never delete a decision: earlier ones survive, marked superseded (§5.10, R-09)
+        # never delete a decision: earlier ones survive, marked superseded (R-09)
         current = {c["id"]: c for c in data["contracts"]}
         for c in plan.meta.get("frozen_contracts", []):
             if current.get(c["id"]) != c:
-                report.errors.append(f"{c['id']} is exposed by merged work and is frozen: keep it exactly as it was (§5.10)")
+                report.errors.append(f"{c['id']} is exposed by merged work and is frozen: keep it exactly as it was")
         previous = plan.previous_design()
         if previous:
             for d in previous["decisions"]:
@@ -249,7 +264,7 @@ def _check_content(plan: PlanState, stage: str, data: dict, report: checks.Repor
     elif stage == "approval":
         if not data["approved"] and not (data.get("notes") or "").strip():
             report.errors.append("notes: say what to change; a rejection with no notes re-runs the design "
-                                 "with nothing to go on (D-170)")
+                                 "with nothing to go on")
 
     elif stage == "decompose":
         intent, design = plan.stage("intent"), plan.stage("design")
@@ -268,10 +283,21 @@ def _check_content(plan: PlanState, stage: str, data: dict, report: checks.Repor
                     if t not in known:
                         report.errors.append(
                             f"leaf {leaf['id']}: traces {t}, which the intent and design don't define "
-                            "(an unimplied capability needs a pause, §6.2)")
+                            " (an unimplied capability needs a pause)")
                 for c in leaf["contracts"]:
                     if c not in contracts:
                         report.errors.append(f"leaf {leaf['id']}: unknown contract {c}")
+                # a leaf lists a file because it read it: an existing file needs a citation into it
+                evidence = leaf.get("evidence") or []
+                cited = {checks.cite_path(e) for e in evidence}
+                for f in leaf["files"]:
+                    if repo.exists(f) and not repo.is_dir(f) and checks.cite_path(f) not in cited:
+                        report.errors.append(
+                            f"leaf {leaf['id']}: lists {f}, which exists, with no evidence: cite the line(s) there "
+                            "the leaf changes or extends (path:line), found by reading. A file you only guess "
+                            "needs the change isn't listed, and a search ('rewrite any test that…') is done now, "
+                            "not planned")
+                _cites_exist(repo, [(f"leaf {leaf['id']} evidence", e) for e in evidence], report)
 
     elif stage == "sequence":
         result, _ = checks.check_plan(
@@ -285,7 +311,7 @@ def _check_content(plan: PlanState, stage: str, data: dict, report: checks.Repor
         new = {p["id"]: p for p in data["prs"]}
         for pid, old in frozen.items():
             if new.get(pid) != old:
-                report.errors.append(f"{pid} has merged and is frozen: keep it exactly as it was (§5.10)")
+                report.errors.append(f"{pid} has merged and is frozen: keep it exactly as it was")
 
     elif stage == "security":
         design = plan.stage("design")
@@ -297,7 +323,7 @@ def _check_content(plan: PlanState, stage: str, data: dict, report: checks.Repor
             for ref in f.get("breaks") or []:
                 if ref not in known:
                     report.errors.append(f"security: {f['id']} breaks {ref}, which the brief and design don't have")
-        # a fix that goes against a decision reaches the designer before any builder (D-144)
+        # a fix that goes against a decision reaches the designer before any builder
         decisions = {d["id"] for d in design["decisions"] if d["status"] != "superseded"}
         asked = {q.get("about") for q in data.get("questions") or []}
         for f in data["findings"]:

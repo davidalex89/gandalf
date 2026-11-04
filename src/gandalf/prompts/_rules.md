@@ -71,6 +71,9 @@ is validated by code; anything that breaks these rules is rejected and sent back
     "why": [{"kind": "evidence", "cite": "app/main.py", "text": "No middleware throttles requests"}],
     "alternative": "Accept the risk; favouriting is idempotent"}
    ```
+   A pause the designer has already decided (shown under their answers as approved,
+   rejected or with guidance) is settled: don't raise it again, carry on as decided, and
+   cite it (`PA-n`) where the stage records the choice.
 8. **"Decide it yourself" answers.** If the designer delegated a question (shown under
    their answers), decide it and don't ask about it, or the topic they named, again. In
    the intent and design stages, record each choice under `assumptions` with `ref` set
@@ -78,9 +81,13 @@ is validated by code; anything that breaks these rules is rejected and sent back
    An answer that settles the question but leaves one detail to you ("the design picks
    the exact hours") is not a delegation: record that detail under `assumptions` with no
    `ref`, since a `ref` is only for a question the designer delegated whole.
+   A decision never cites a delegated question as its source: a decision that follows from
+   a delegation is sourced from the repo pattern it follows (`repo`), and the question is
+   cited only on the assumption that records the choice.
 9. **"Don't know" answers.** If the designer answered a question from this stage with
    "don't know", research it (codebase, documentation) and add one `proposals` entry
-   for it: a one-line `summary` plus the solution that best fits, with its basis.
+   for it, with exactly these fields: `question_id` (the Q-n), a one-line `summary`,
+   `proposal` (the solution that best fits) and its `basis`.
 10. **Plain-language summaries.** Every `summary` field is one line a person can read
    without knowing the code: what it means for the product, not which function changes.
 11. **Verification.** If confirming a suspected defect needs the repo's tests to run,

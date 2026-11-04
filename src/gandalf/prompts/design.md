@@ -16,11 +16,12 @@ brief. The designer reviews it at the design checkpoint before anything is broke
   the design checkpoint; kind `security` with the finding id as `ref` for a change a
   security finding asked for; kind `boundary` with the finding id (G-n) as `ref` for a
   change a boundary finding asked for), alternatives considered and why they lost, consequences, and
-  status. Follow existing patterns wherever the repo has one. If an earlier design's
-  decisions are shown below, keep every one: mark replaced ones `superseded` with
-  `superseded_by`, never delete them. A decision that supersedes another says in full
-  what it keeps and what it changes; never "keep everything DEC-n decided", because the
-  designer's review shows accepted decisions only and the superseded text sits in the record.
+  status. Follow existing patterns wherever the repo has one. If an earlier design is
+  shown below, answer with a patch (the re-run section says how): a replaced decision is
+  listed under `superseded`, never deleted or edited. A decision that supersedes another
+  says in full what it keeps and what it changes; never "keep everything DEC-n decided",
+  because the designer's review shows accepted decisions only and the superseded text sits
+  in the record.
 - **contracts** (`C-n`): anything one PR hands to another, written as the exact
   artifact in the repo's own language and style (schema, type, function signatures,
   routes with request/response shapes, event payloads). Later PRs quote them word for
@@ -34,7 +35,17 @@ brief. The designer reviews it at the design checkpoint before anything is broke
   Keep each contract to what one piece of work delivers: if a later step adds another
   function to the same module, give that function its own contract.
 - **data_model**, **components**, **wiring**: what changes and how it fits the existing
-  wiring (cite files).
+  wiring (cite files). When a data model change adds a place for information the product
+  already holds somewhere else (a table, column, field, file or format beside an existing
+  one), say in `replaces` what the old one is (`what`, cited in `where`) and its `fate`:
+  `stays`, the old one remains the source of truth and nothing moves off it; or `goes`,
+  readers and writers move to the new one and the old one is removed, with `when` naming
+  the release or step that stops writing it and the one that removes it. Its `source` is
+  the designer's: an answered question or resolved pause, `intent` when the feature
+  description says it, or `checkpoint`. The fate is never your decision. "Keeps working
+  as it does today" settles how the old one behaves while both exist, not whether it
+  stays. If nothing settles it, ask: the answer decides whether this is one release or
+  several.
 - **inventory** (`N-n`): every new or changed endpoint/action, input, stored data,
   outbound call, dependency, secret, error path and repeatable action. The security
   review works from this.
@@ -112,7 +123,11 @@ brief. The designer reviews it at the design checkpoint before anything is broke
     "decision": "A favorites table with a unique (user_id, project_id).",
     "source": {"kind": "repo", "ref": "app/models/project.py"}, "alternatives": ["JSON column on users: no uniqueness"],
     "consequences": "One migration.", "status": "accepted"}],
-  "data_model": [{"change": "New favorites table", "where": ["app/models/project.py"]}],
+  "data_model": [{"change": "New favorites table", "where": ["app/models/project.py"]},
+    {"change": "Favourites move out of the users.settings JSON into the new table", "where": ["app/models/user.py"],
+     "replaces": {"what": "the favourites list kept in users.settings", "where": "app/models/user.py",
+       "fate": "goes", "when": "Writers stop after the backfill (release 2); the key is dropped in release 3",
+       "source": {"kind": "designer", "ref": "Q-2"}}}],
   "components": [{"name": "Favorite service", "responsibility": "Add, remove, list", "layer": "models"}],
   "contracts": [{"id": "C-1", "name": "Favorite service", "kind": "function", "language": "python",
     "body": "def add_favorite(session, user_id: int, project_id: int) -> bool: ...", "why": "Shared by router and tests.",

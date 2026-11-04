@@ -63,8 +63,7 @@ visitor or a shared page, a server log, an error body, an export) is never low s
 rate it medium or above, so the fix is built in rather than left as a note. If your own
 reasoning says what the exposure would break, put the id in `breaks`; if it breaks an
 assumption the designer approved (assumptions have no id), say which in `issue` and let
-the severity carry it. Three evaluation runs filed this kind of finding as low and the
-designer had to make the fix required by hand each time.
+the severity carry it.
 
 **1c. Every route around a rule, in one pass.** For each rule the feature enforces (a
 limit, a permission, a block), list every way the guarded action can happen in this

@@ -1,4 +1,4 @@
-"""Adapters move prompts and responses between the core and a model (DESIGN.md §11.2)."""
+"""Adapters move prompts and responses between the core and a model."""
 
 from __future__ import annotations
 

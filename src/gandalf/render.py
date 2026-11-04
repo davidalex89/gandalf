@@ -1,4 +1,4 @@
-"""Write the plan (DESIGN.md §10): PR specs, plan.md, supporting documents, plan.json.
+"""Write the plan: PR specs, plan.md, supporting documents, plan.json.
 
 Rendering is deterministic and refuses to run unless every stage is complete and every
 check passes. Sections that don't apply say "None" rather than being left out.
@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from gandalf import SCHEMA_VERSION, __version__, checks, diagnose
+from gandalf import PLAN_SCHEMA_VERSION, __version__, checks, codemap, diagnose, diagrams, document, reach, settings
+from gandalf.document import anchor_id
 from gandalf.state import PlanState, now
 from gandalf.state import _read as _read_json
 from gandalf.prompts import check_sources
@@ -47,6 +48,7 @@ class Rendered:
     tier: str
     files: list[Path] = field(default_factory=list)
     report: checks.Report = field(default_factory=checks.Report)
+    notes: list[str] = field(default_factory=list)     # what the render skipped and how to get it
 
 
 def _none(items) -> str | None:
@@ -71,14 +73,29 @@ def _bullets(items: list[str]) -> str:
 
 
 def _live_assumptions(intent: dict, design: dict | None) -> tuple[list[dict], list[dict]]:
-    """Intent assumptions still in force, and those the design retired (D-116)."""
+    """Intent assumptions still in force, and those the design retired."""
     retired = {r["text"] for r in (design or {}).get("retired_assumptions") or []}
     items = intent.get("assumptions") or []
     return [a for a in items if a["text"] not in retired], [a for a in items if a["text"] in retired]
 
 
+def _fate(r: dict) -> str:
+    if r["fate"] == "stays":
+        return "stays as the source of truth; nothing moves off it"
+    return f"goes: {r['when']}"
+
+
+def _replaces_text(x: dict) -> str:
+    """What a data model change takes the place of, and the designer's call on it."""
+    r = x.get("replaces")
+    if not r:
+        return ""
+    return (f" Replaces {r['what']} (`{r['where']}`), which {_fate(r)} "
+            f"(settled by {r['source']['kind']} {r['source']['ref']}).")
+
+
 def _assumption_lines(items: list[dict]) -> list[str]:
-    """Details decided for the designer (D-96): delegated ones cite the question."""
+    """Details decided for the designer: delegated ones cite the question."""
     return [f"{a['text']} *({'you delegated ' + a['ref'] if a.get('ref') else 'a small detail decided without asking'}; "
             f"why: {a['why']})*" for a in items]
 
@@ -102,10 +119,10 @@ class Planner:
         self.design = plan.stage("design")
         self.decompose = plan.stage("decompose")
         self.sequence = plan.stage("sequence")
-        # each fix's PR comes from the sequence, which built it in (D-149)
+        # each fix's PR comes from the sequence, which built it in
         self.security = checks.with_placement(plan.stage("security"), self.sequence)
         self.boundary = plan.stage("boundary")
-        # a gap the designer carried (D-180) stays on record even when a later re-run archived
+        # a gap the designer carried stays on record even when a later re-run archived
         # the check that found it; one entry per finding id, the latest decision wins
         self.carried_gaps = list({f["id"]: f for c in plan.boundary_checks()
                                   for f in c.get("findings", []) if f.get("carried")}.values())
@@ -130,18 +147,18 @@ class Planner:
         self.wave_of = {pid: i + 1 for i, wave in enumerate(derived["waves"]) for pid in wave}
         self.contracts = {c["id"]: c for c in self.design["contracts"]}
         self.decisions = {d["id"]: d for d in self.design["decisions"]}
-        # infrastructure this plan needs, and other teams' apps that adopt it (D-127)
+        # infrastructure this plan needs, and other teams' apps that adopt it
         self.external = {e["id"]: e for e in self.design.get("external") or [] if not checks.is_client(e)}
         self.clients = {e["id"]: e for e in self.design.get("external") or [] if checks.is_client(e)}
         self.deliveries = plan.meta.get("deliveries", {})
-        # PR monitoring (§5.11): every change found on a branch, oldest first
+        # PR monitoring: every change found on a branch, oldest first
         self.changes = [e for e in _read_json(plan.dir / "changes.json", []) if e["status"] not in ("judging", "replaced")]
         self.leaves = {leaf["id"]: leaf for comp in self.decompose["components"] for leaf in comp["leaves"]}
         self.applied = checks.applied_findings(self.security)
         self.security_by_pr: dict[str, list[dict]] = {}
         for f in self.applied:
             self.security_by_pr.setdefault(f["target_pr"], []).append(f)
-        # low-severity fixes with a concrete requirement: shown as non-blocking notes (D-87)
+        # low-severity fixes with a concrete requirement: shown as non-blocking notes
         self.consider_by_pr: dict[str, list[dict]] = {}
         for f in self.security["findings"]:
             if (f["severity"] == "low" and not f.get("breaks") and f["response"] in ("mitigate", "eliminate")
@@ -149,27 +166,169 @@ class Planner:
                 self.consider_by_pr.setdefault(f["target_pr"], []).append(f)
         self.tier = checks.select_tier(self.sequence, plan.approved_pauses(), plan.meta.get("force_full", False))
 
+    # --- reach -----------------------------------------------------------
+    def compute_reach(self) -> None:
+        """How far each PR reaches into the code. A failure here is logged and never stops a render."""
+        self.reach = None
+        self.reach_error = None
+        try:
+            cmap = codemap.for_plan(self.plan)
+            reviews = []
+            for r in self.reviews:              # each finding under its own id, the rest as the review
+                reviews += [(f["id"], f) for f in r.get("findings", [])]
+                reviews.append(("security review", {k: v for k, v in r.items() if k != "findings"}))
+            for b in self.plan.boundary_checks():
+                reviews += [(f["id"], f) for f in b.get("findings", [])]
+                reviews.append(("boundary check", {k: v for k, v in b.items() if k != "findings"}))
+            reviews += [(n["id"], n) for n in self.design.get("inventory") or []]
+            applied = {pid: [f["id"] for f in fs] for pid, fs in self.security_by_pr.items()}
+            self.reach = reach.compute(prs=self.sequence["prs"], order=self.order, repo=Path(self.repo["path"]),
+                                       cmap=cmap, inventory=self.design.get("inventory") or [],
+                                       reviews=reviews, applied=applied, risk=self.derived.get("risk", {}))
+        except Exception as exc:  # noqa: BLE001 - the report is an extra; the plan must still render
+            self.plan.record_internal_error("render: reach", exc)
+            self.reach_error = f"{type(exc).__name__}: {exc}"
+
+    def flagged(self) -> dict[str, list[str]]:
+        """Security-relevant labels per PR for the build-order diagram."""
+        out = {}
+        for pid in self.order:
+            e = (self.reach or {}).get("prs", {}).get(pid) if self.reach else None
+            tags = list(e["plan"]["fixes"]) + list(e["plan"]["risk"]) if e else [
+                f["id"] for f in self.security_by_pr.get(pid, [])]
+            if e and e.get("reach") and e["reach"]["flows"]:
+                cats = sorted({c for f in e["reach"]["flows"]
+                               for c in self.reach["sensitive"].get(f["target"], {}).get("categories", [])})
+                tags += [c for c in cats if c not in tags]
+            if tags:
+                out[pid] = tags
+        return out
+
+    def reach_diagrams(self) -> dict[str, str]:
+        """report/<name>.svg -> SVG text."""
+        out = {"report/build-order.svg": diagrams.build_order(
+            self.order, self.prs, self.derived["waves"], self.derived["lanes"], self.flagged(), self.unit)}
+        if self.reach:
+            out["report/landing.svg"] = diagrams.landing(self.order, self.reach)
+            for pid in self.order:
+                svg = diagrams.pr_flow(pid, self.reach["prs"][pid], self.reach["sensitive"])
+                if svg:
+                    out[f"report/{pid.lower()}-flow.svg"] = svg
+        return out
+
+    def reach_lines(self, images: dict[str, str], part: str = "all") -> list[str]:
+        """``part``: "all", "summary" (the diagrams and the unreviewed list) or "detail" (the table and flows)."""
+        if part == "detail":
+            return self.reach_detail_lines(images)
+        out = ["![Build order](report/build-order.svg)", ""]
+        if not self.reach:
+            why = f" (the reach report failed and was logged: {self.reach_error})" if self.reach_error else ""
+            return out + [f"The reach report isn't available{why}.", ""]
+        out += ["![Where each PR lands](report/landing.svg)", ""]
+        sources = ("the security review and boundary checks' own citations, patterns in the code, and the "
+                   "plan's security fixes and risk tags")
+        if self.reach["map"]:
+            out += [f"Security-relevant code comes from {sources}. Pattern matches are hints, not verdicts. "
+                    "The code map knows names, not types, and misses code reached dynamically "
+                    "(string-built routes, getattr, reflection).", ""]
+        else:
+            out += [f"Each {self.unit}'s files and the plan's own security data. Install the code map "
+                    f"(`{codemap.INSTALL_HINT}`) to see the code each {self.unit} calls and the code that uses it, "
+                    "and where those meet security-relevant code.", ""]
+        unreviewed = self.reach.get("unreviewed") or []
+        if unreviewed:
+            out += ["### Security-relevant code no review cited", "",
+                    "Reached within two steps but never cited by the security review or a boundary check. "
+                    "Look here first.", ""]
+            for u in unreviewed:
+                step = "" if u["distance"] <= 1 else f", {u['distance']} steps"
+                out.append(f"- {u['pr']} {u['how']} `{u['target']}` ({', '.join(u['categories']) or 'cited'}{step})")
+            out.append("")
+        if part == "summary":
+            return out
+        return out + self.reach_detail_lines(images)
+
+    def reach_detail_lines(self, images: dict[str, str]) -> list[str]:
+        if not self.reach:
+            return []
+        out = [f"| {self.unit} | Plan | Security-relevant code it changes or reaches |", "|---|---|---|"]
+        for pid in self.order:
+            e = self.reach["prs"][pid]
+            plan_side = ", ".join(e["plan"]["fixes"] + e["plan"]["risk"] + e["plan"]["inventory"]) or "—"
+            items = []
+            if e.get("reach"):
+                for name, n in e["reach"].get("widely_used", {}).items():
+                    items.append(f"`{name}` (a class used in {n} places; its users aren't followed)")
+                for f in e["reach"]["flows"]:
+                    info = self.reach["sensitive"].get(f["target"], {})
+                    label = ", ".join(info.get("categories", []) + info.get("cited", [])) or "cited"
+                    step = "" if f["distance"] <= 1 else f", {f['distance']} steps"
+                    items.append(f"`{f['target']}` ({f['how']}{step}: {label})")
+            else:
+                for path, hints in e["hints"].items():
+                    items.append(f"`{path}` ({', '.join(sorted({h['category'] for h in hints}))})")
+            shown = "; ".join(items[:6]) + (f"; and {len(items) - 6} more" if len(items) > 6 else "")
+            out.append(f"| {pid} | {plan_side} | {shown or 'none found'} |")
+        out.append("")
+        flows = [k for k in images if k.endswith("-flow.svg")]
+        if flows:
+            out += [f"### Each {self.unit}'s flows", ""]
+            for pid in self.order:
+                key = f"report/{pid.lower()}-flow.svg"
+                if key in images:
+                    out += [f"![{pid}: where it meets security-relevant code]({key})", ""]
+        return out
+
     # --- helpers --------------------------------------------------------------------
     def pr_file(self, pid: str) -> str:
         num = pid.split("-", 1)[1]
         return f"prs/pr-{num}-{self.prs[pid]['slug']}.md"
+
+    def pr_heading(self, pid: str) -> str:
+        return f"{pid}: {self.prs[pid]['title']}"
+
+    def pr_link(self, pid: str) -> str:
+        """An anchor to the PR's section of spec.md (2.0): the heading's GitHub-style id."""
+        return "#" + anchor_id(self.pr_heading(pid))
 
     def pr_type_line(self, pr: dict) -> str:
         if pr["type"] == "inert":
             return f"Inert — {pr['layer']} layer"
         if pr["type"] == "enabling":
             return f"Enabling — switches on: {pr['capability']}"
+        if pr["type"] == "release":
+            return f"Release step — changes behaviour: {pr['behaviour_change']}"
         return "Precursor — fixes an existing issue before the work"
+
+    def models_used(self) -> dict[str, list[str]]:
+        """stage -> the models whose output was accepted for it, in order."""
+        used: dict[str, list[str]] = {}
+        for e in self.plan.log_entries():
+            if e["kind"] == "accepted" and e.get("model") and not e.get("duplicate"):
+                seen = used.setdefault(e["stage"], [])
+                if e["model"] not in seen:
+                    seen.append(e["model"])
+        return used
+
+    def models_line(self) -> str:
+        used = self.models_used()
+        if not used and not self.plan.meta.get("models"):
+            return "not recorded (this plan was made before GANDALF 1.1)"
+        parts = []
+        for stage in ("context", "intent", "design", "security", "decompose", "sequence", "boundary"):
+            models = used.get(stage) or [settings.model_for(settings.for_plan(self.plan), stage)[0]]
+            parts.append(f"{stage} {' then '.join(models)}")
+        return ", ".join(parts)
 
     def size_line(self, pr: dict) -> str:
         s = pr["size"]
-        files = len(pr["changes"])          # counted, not the model's number (D-173)
+        files = len(pr["changes"])          # counted, not the model's number
         return (f"{self.derived['bands'][pr['id']]} (est. ~{s['production_lines']} production lines; "
                 f"for information: ~{s['total_lines']} reviewable lines incl. tests, "
                 f"{files} file{'s' if files != 1 else ''})")
 
     def request_file(self, eid: str) -> str:
-        """requests/ for infrastructure this plan needs; handoffs/ for client apps (D-127)."""
+        """requests/ for infrastructure this plan needs; handoffs/ for client apps."""
         num = int(eid.split("-")[1])
         e = self.external.get(eid) or self.clients[eid]
         words = "".join(c if c.isalnum() else " " for c in e["summary"].lower().replace("'", "")).split()
@@ -193,7 +352,7 @@ class Planner:
         return [pid for pid, gates in self.derived["gates"].items() if eid in gates]
 
     def switch_gated_by(self, eid: str) -> list[str]:
-        """PRs switched on by configuration that is set only once this dependency is ready (D-109)."""
+        """PRs switched on by configuration that is set only once this dependency is ready."""
         return [pid for pid, gates in self.derived.get("switch_gates", {}).items() if eid in gates]
 
     def needed_before(self, eid: str) -> str:
@@ -215,18 +374,27 @@ class Planner:
             return "requested"
         return "delivered as requested" if d["as_requested"] else "delivered with changes; the plan was updated to match"
 
-    def must_hold(self, pr: dict) -> list[str]:
-        """What's true of every PR of its type when it's done, stated, never a command (D-143)."""
+    def must_hold(self, pr: dict, common: bool = True) -> list[str]:
+        """What's true of every PR of its type when it's done, stated, never a command.
+        ``common`` adds the statements every PR shares; the consolidated spec states those once."""
         out = {"inert": ["The repo's existing tests pass, unchanged: nothing a user or client can observe has changed."],
                "enabling": ["The capability works end to end, as Done when describes, and the repo's existing tests "
                             "pass, updated only where this PR intends a change.",
                             f"It can be switched back off: {(pr.get('switch_off') or {}).get('how', 'see section 10')}"],
                "precursor": ["The existing problem this PR fixes no longer happens, and the repo's existing tests pass."],
+               "release": ["Behaviour changes exactly as section 10 says and in no other observable way, and the repo's "
+                           "existing tests pass, updated only where this PR intends a change.",
+                           f"It can be undone: {(pr.get('rollback') or {}).get('how', 'see section 10')}"],
                }[pr["type"]]
         if pr.get("flag"):
             out.append(f"It works with the flag `{pr['flag']['name']}` on and with it off.")
-        out.append("The repo's own lint, format and type checks pass, the way the repo enforces them (some may be "
-                   "advisory in its CI).")
+        if common:
+            out += self.common_must_hold()
+        return out
+
+    def common_must_hold(self) -> list[str]:
+        out = ["The repo's own lint, format and type checks pass, the way the repo enforces them (some may be "
+               "advisory in its CI)."]
         scanner = checks.secret_scanner(self.scan, self.context)
         if scanner:
             out.append(f"The repo's secret scanner ({scanner}) passes: no secret reaches the repo.")
@@ -245,6 +413,8 @@ class Planner:
             reasons = []
             if pr["type"] == "enabling":
                 reasons.append("switches behaviour on")
+            if pr["type"] == "release":
+                reasons.append("changes behaviour")
             if pr["breaking"]["is_breaking"]:
                 reasons.append("breaking change")
             risk = [r for r in self.derived["risk"][pid] if r != "enabling"]
@@ -258,7 +428,7 @@ class Planner:
         return [f"[{pid}]({self.pr_file(pid)}) {self.prs[pid]['summary']} — {'; '.join(r)}"
                 for _, pid, r in scored[:5]]
 
-    # --- PR spec (§10.3) ----------------------------------------------------------------
+    # --- PR spec ----------------------------------------------------------------
     def pr_spec(self, pid: str) -> str:
         pr = self.prs[pid]
         unit = self.unit
@@ -360,6 +530,13 @@ class Planner:
             named = checks.change_leaves(ch)
             line += f" (leaf{'s' if len(named) > 1 else ''} {', '.join(named)})"
             out.append(line)
+        # the sequence stage paraphrases a leaf, and a load-bearing word can go missing
+        out += ["", "**What the decomposition asked for**, in its own words. A detail named here and not "
+                "above still belongs to this PR:", ""]
+        out.append(_bullets([f"**{lid}** {self.leaves[lid]['deliverable']} → {self.leaves[lid]['outcome']}"
+                             + (f" (see {', '.join(f'`{e}`' for e in self.leaves[lid]['evidence'])})"
+                                if self.leaves[lid].get("evidence") else "")
+                             for lid in pr["leaves"]]))
         out += ["", "**Reuse — do not recreate:**", ""]
         out.append(_bullets([f"{r['what']} — `{r['where']}`" for r in pr["reuse"]]))
         out.append("")
@@ -400,6 +577,10 @@ class Planner:
         if pr.get("switch_off"):
             so = pr["switch_off"]
             out += ["", f"How to switch it back off: {so['how']}"]
+        if pr.get("behaviour_change"):
+            out += ["", f"What changes for users or clients: {pr['behaviour_change']}"]
+        if pr.get("rollback"):
+            out += ["", f"How to undo it: {pr['rollback']['how']}"]
         if pr.get("expand_contract"):
             ec = pr["expand_contract"]
             out += ["", f"This is the **{ec['role']}** step; its pair is {ec['pair']}."]
@@ -441,7 +622,7 @@ class Planner:
         out.append(_bullets(list(pr["out_of_scope"]) + list(STANDARD_OUT_OF_SCOPE)))
         out.append("")
 
-        out += ["## 14. If reality doesn't match", "", "Two cases (D-151).", "",
+        out += ["## 14. If reality doesn't match", "", "Two cases.", "",
                 "**A small difference you can settle inside this PR's own files**: a bug in a file listed "
                 "under Changes, a test that needs adjusting, a repo command that needs another argument. "
                 "If the fix leaves every contract in sections 4 and 5, every decision in section 9 and every "
@@ -449,7 +630,7 @@ class Planner:
                 "List each one in this note and hand it to the designer with the finished PR. It never goes "
                 "in the repo, a commit message or the PR description. Notes from the PRs this one depends "
                 "on come with this spec, if there were any: read them before the starting state, since a "
-                "note can move where something lives (D-177).", "",
+                "note can move where something lives.", "",
                 "```text",
                 "GANDALF DEVIATION NOTE",
                 f"PR: {pid}",
@@ -479,7 +660,7 @@ class Planner:
                 "(work is described as ordered change sets).", ""]
 
     def attention(self) -> list[str]:
-        """One plain-language line per item; the detail lives in design.md (D-70)."""
+        """One plain-language line per item; the detail lives in design.md."""
         items = []
         for qid, q in self.plan.answers["questions"].items():
             if q["status"] == "accepted_proposal":
@@ -495,9 +676,8 @@ class Planner:
                 items.append(f"**Your approval note** at the design checkpoint: {g['text']}")
         assumed = len(_live_assumptions(self.intent, self.design)[0]) + len(self.design.get("assumptions") or [])
         if assumed:
-            where = "intent-brief.md and design.md" if self.tier == "full" else "technical.md"
             items.append(f"**Assumptions**: {assumed} detail{'s were' if assumed != 1 else ' was'} decided for "
-                         f"you, listed in {where}")
+                         "you, listed under sections 1 and 3")
         for x in self.design["precursors"]:
             items.append(f"**{x['id']}**, an existing issue fixed {x['placement']} the work: {x.get('summary') or x['what']}")
         items += [f"**{d['ref']}**, a security requirement dropped on re-review: {d['reason']}"
@@ -522,14 +702,14 @@ class Planner:
         return out
 
     def limitations(self) -> list[str]:
-        """Known product limitations the designer should knowingly accept (D-71)."""
+        """Known product limitations the designer should knowingly accept."""
         items = [f"{l['summary']} *(source: {l['source']})*" for l in self.design.get("limitations", [])]
         items += [f"{f['summary']} *(from security {ref if ref.startswith('review') else 'review ' + ref})*"
                   for ref, f in self.settled_findings(("limitation",))]
         return items
 
     def needed_lines(self) -> list[str]:
-        """Infrastructure other teams build (D-92): one plain line each, with its request."""
+        """Infrastructure other teams build: one plain line each, with its request."""
         out = []
         for eid, e in self.external.items():
             owner = "owner unknown: find out who" if e["owner"] == "unknown" else e["owner"]
@@ -580,7 +760,7 @@ class Planner:
         return "\n".join(out)
 
     def adopt_lines(self) -> list[str]:
-        """Other teams' apps that can adopt the feature (D-127): one plain line each, with its handoff."""
+        """Other teams' apps that can adopt the feature: one plain line each, with its handoff."""
         out = []
         for eid, e in self.clients.items():
             owner = "owner unknown: find out who" if e["owner"] == "unknown" else e["owner"]
@@ -591,7 +771,7 @@ class Planner:
         return out
 
     def handoff_md(self, eid: str) -> str:
-        """A self-contained brief for a team whose app can adopt what this plan builds (D-127)."""
+        """A self-contained brief for a team whose app can adopt what this plan builds."""
         e = self.clients[eid]
         exposers, switches = self.available_after(eid)
         reqs = self.security_by_pr.get(eid, []) + self.consider_by_pr.get(eid, [])
@@ -616,7 +796,7 @@ class Planner:
         return "\n".join(out)
 
     def change_lines(self) -> list[str]:
-        """The change history (§5.11): what monitoring found on each branch and what became of it."""
+        """The change history: what monitoring found on each branch and what became of it."""
         outcome = {"absorbed": "updated its own spec automatically", "approved": "approved by the designer",
                    "proposed": "waiting for the designer", "rejected": "rejected: the builder goes back to the spec",
                    "revert": "breaks a rule: the builder reverts it", "harmless": "nothing that changes the plan",
@@ -639,11 +819,12 @@ class Planner:
         return out
 
     def slice_map(self) -> list[str]:
-        out = ["| # | Type | Layer / capability switched on | Depends on |", "|---|---|---|---|"]
+        out = ["| # | Type | Layer, capability switched on, or behaviour changed | Depends on |", "|---|---|---|---|"]
         for pid in self.order:
             pr = self.prs[pid]
-            what = pr.get("layer") if pr["type"] == "inert" else (pr.get("capability") or "precursor fix")
-            out.append(f"| [{pid}]({self.pr_file(pid)}) | {pr['type']} | {what} | {', '.join(pr['depends_on']) or '—'} |")
+            what = (pr.get("layer") if pr["type"] == "inert" else pr.get("behaviour_change") if pr["type"] == "release"
+                    else (pr.get("capability") or "precursor fix"))
+            out.append(f"| [{pid}]({self.pr_link(pid)}) | {pr['type']} | {what} | {', '.join(pr['depends_on']) or '—'} |")
         out.append("")
         enabling = [pid for pid in self.order if self.prs[pid]["type"] == "enabling"]
         if enabling:
@@ -668,7 +849,7 @@ class Planner:
         return out
 
     def build_grid(self) -> list[str]:
-        """The build order at a glance (D-150). Rows are lanes, chains one builder can take end
+        """The build order at a glance. Rows are lanes, chains one builder can take end
         to end; columns are waves, everything in a wave can start once the previous wave has
         merged. Other teams' work takes its own row, in the wave of the first PR that waits."""
         waves, lanes = self.derived["waves"], self.derived["lanes"]
@@ -710,7 +891,7 @@ class Planner:
 
     def sequence_lines(self) -> list[str]:
         out = []
-        # one suggested review point per capability, after the last PR that switches it on (D-85)
+        # one suggested review point per capability, after the last PR that switches it on
         last_for_capability = {}
         for pid in self.order:
             if self.prs[pid]["type"] == "enabling":
@@ -722,7 +903,7 @@ class Planner:
             gates = self.derived["gates"].get(pid, [])
             switch = self.derived.get("switch_gates", {}).get(pid, [])
             waits = f" **Blocked until {', '.join(gates)} {'is' if len(gates) == 1 else 'are'} ready.**" if gates else ""
-            out.append(f"{i}. [{pid}]({self.pr_file(pid)}) **{pr['title']}** — {pr['type']}, "
+            out.append(f"{i}. [{pid}]({self.pr_link(pid)}) **{pr['title']}** — {pr['type']}, "
                        f"{self.derived['bands'][pid]}, lane {self.lane_of[pid]}, wave {self.wave_of[pid]}. {pr['summary']}{waits}")
             # another team's work holds this back: say so where the order is read
             for eid in gates + switch:
@@ -764,7 +945,8 @@ class Planner:
             out += ["Replaced by later decisions:", ""] + [f"- ~~{a['text']}~~ *({why[a['text']]})*" for a in retired] + [""]
         return out
 
-    def repo_context_lines(self) -> list[str]:
+    def repo_context_lines(self, part: str = "all") -> list[str]:
+        """``part``: "all", or "summary" (repo, stack, layers, rules, conventions) or "detail" (the rest)."""
         r, s = self.repo, self.scan
         out = [f"- **Repo:** `{r['name']}` ({'git, commit ' + (r['commit'] or '?')[:12] if r['vcs'] == 'git' else 'not a git repository'})"]
         if r.get("dirty"):
@@ -784,12 +966,18 @@ class Planner:
         out += ["", "### Layers", ""]
         for layer, facts in s["layers"].items():
             out.append(f"- **{layer}:** {', '.join('`' + f['value'] + '`' for f in facts) or 'UNKNOWN'}")
-        out += ["", "### Repo rules", "", _bullets(self.repo_rules()), "", "### Naming", ""]
+        out += ["", "### Repo rules", "", _bullets(self.repo_rules()), ""]
+        c = self.context
+        if part == "summary":
+            out += ["### Conventions", "", _bullets([f"{x['rule']} — e.g. `{x['example']}`" for x in c["conventions"]]), ""]
+            return out
+        if part == "detail":
+            out = []
+        out += ["### Naming", ""]
         out.append(_bullets([f"{n['language']}: {n['file_case']} ({n['share']}), e.g. `{n['example']}`"
                              for n in s["naming"]["files"]]
                             + [f"Tests: `{t['pattern']}` ({t['count']}), e.g. `{t['example']}`"
                                for t in s["naming"]["test_files"]]))
-        c = self.context
         out += ["", "### Confirmed and added by the planning agent (with evidence)", ""]
         out.append(_bullets([f"Confirmed: {x['fact']} [{', '.join(x['evidence'])}]" for x in c["confirmed"]]
                             + [f"Added ({x['area']}): {x['claim']} [{', '.join(x['evidence'])}]" for x in c["added"]]
@@ -806,10 +994,12 @@ class Planner:
                 "", "### Unknowns from the scan", "", _bullets([f"{u['area']}: {u['what']}" for u in s["unknowns"]]), ""]
         return out
 
-    def design_lines(self) -> list[str]:
+    def design_lines(self, current_only: bool = False, with_slice_map: bool = True,
+                     with_decomposition: bool = True) -> list[str]:
         d = self.design
         out = [d["summary"], "", "### Decisions", ""]
-        for dec in d["decisions"]:
+        decisions = [x for x in d["decisions"] if not (current_only and x["status"] == "superseded")]
+        for dec in decisions:
             status = dec["status"] + (f" → {dec['superseded_by']}" if dec.get("superseded_by") else "")
             out += [f"#### {dec['id']} ({status}): {dec['summary']}", "",
                     f"- **Context:** {dec['context']}", f"- **Decision:** {dec['decision']}",
@@ -819,7 +1009,8 @@ class Planner:
         if not d["decisions"]:
             out += ["None.", ""]
         out += ["### Data model changes", "",
-                _bullets([f"{x['change']} [{', '.join(x['where']) or 'new'}]" for x in d["data_model"]]), "",
+                _bullets([f"{x['change']} [{', '.join(x['where']) or 'new'}]" + _replaces_text(x)
+                          for x in d["data_model"]]), "",
                 "### Components", "", _bullets([f"**{x['name']}** ({x['layer']}): {x['responsibility']}" for x in d["components"]]),
                 "", "### Contracts", ""]
         for c in d["contracts"]:
@@ -854,24 +1045,36 @@ class Planner:
                 _bullets([f"**{l['summary']}** {l['detail']} *(source: {l['source']})*" for l in d.get("limitations", [])])]
         out += ["", "### Suspected, not confirmed", "",
                 _bullets([f"`{s['where']}` — {s['what']} (Why unconfirmed: {s['why_unconfirmed']})" for s in d["suspected"]]),
-                "", "### Capabilities", "", _bullets([f"**{c['name']}**: {c['description']}" for c in d["capabilities"]]),
-                "", "### Decomposition", ""]
+                "", "### Capabilities", "", _bullets([f"**{c['name']}**: {c['description']}" for c in d["capabilities"]])]
+        if with_decomposition:
+            out += self.decomposition_lines()
+        if with_slice_map:
+            out += ["", "### Slice map", ""] + self.slice_map()
+        return out
+
+    def decomposition_lines(self) -> list[str]:
+        out = ["", "### Decomposition", ""]
         for comp in self.decompose["components"]:
             out.append(f"- **{comp['id']}. {comp['name']}**")
             for leaf in comp["leaves"]:
                 risk = f" ⚠ {', '.join(leaf['risk'])}" if leaf["risk"] else ""
                 out.append(f"  - **{leaf['id']}** [{leaf['layer']}] {leaf['deliverable']} → {leaf['outcome']} "
                            f"(traces {', '.join(leaf['traces'])}){risk}")
-        out += ["", "### Slice map", ""] + self.slice_map()
         return out
 
-    def security_lines(self) -> list[str]:
+    def security_checked_lines(self) -> list[str]:
         s = self.security
-        out = ["A lightweight review for obvious flaws, not a full threat model.", "",
-               "### What was checked", ""]
+        out = ["### C. What the security review checked", ""]
         out.append(_bullets([f"**{c['inventory']}**: " + "; ".join(c["questions"]) for c in s["checked"]]))
-        out += ["", "### Abuse cases", "", _bullets([f"**{a['capability']}**: {a['case']}" for a in s["abuse_cases"]]),
-                "", "### Findings", ""]
+        out += ["", "### Abuse cases", "", _bullets([f"**{a['capability']}**: {a['case']}" for a in s["abuse_cases"]]), ""]
+        return out
+
+    def security_lines(self, part: str = "all") -> list[str]:
+        s = self.security
+        out = ["A lightweight review for obvious flaws, not a full threat model.", ""]
+        if part == "all":
+            out += self.security_checked_lines()[:-1] + [""]
+        out += ["### Findings", ""]
         if s["findings"]:
             out += ["| ID | Severity | In short | Response | Outcome |", "|---|---|---|---|---|"]
             applied = {f["id"] for f in self.applied}
@@ -904,7 +1107,7 @@ class Planner:
             out += [f"- **After {c['after']}:** {c['state']}" for c in self.boundary["checked"]]
             carried = self.carried_gaps
             if carried:
-                out += ["", "Gaps the designer carried instead of replanning (D-180); each is noted on the PR it follows:", ""]
+                out += ["", "Gaps the designer carried instead of replanning; each is noted on the PR it follows:", ""]
                 out += [f"- **{f['id']} after {f['after']}:** {f['summary']}. The check asked: {f['replan']} "
                         f"Designer's notes: {f['carried']['notes'] or 'none'}." for f in carried]
         out.append("")
@@ -959,7 +1162,8 @@ class Planner:
                 f"- Questions asked: {m['questions_asked']} ({', '.join(f'{k}: {v}' for k, v in m['questions_by_stage'].items()) or 'none'})"
                 + (f"; {m['questions_withdrawn']} more withdrawn before being answered" if m.get("questions_withdrawn") else ""),
                 f"- Re-asks after a later stage found something new: {m['reasks']}",
-                f"- Review rounds (D-180): the security review sent the design back {m['rounds']['design_from_security']} "
+                f"- Models: {self.models_line()}",
+                f"- Review rounds: the security review sent the design back {m['rounds']['design_from_security']} "
                 f"time(s); the boundary check sent the plan back {m['rounds']['replan_from_boundary']} time(s)",
                 f"- Proposals accepted after \"don't know\": {m['answered_unknown_then_proposed']}",
                 f"- Pauses: {m['pauses']}", f"- Mismatches repaired: {m['mismatches']}", ""]
@@ -975,48 +1179,291 @@ class Planner:
         out += ["## Order of operations", ""] + self.sequence_doc_lines(include_order=False)
         return "\n".join(out)
 
-    def plan_md(self) -> str:
-        title = self.intent["title"]
-        out = [f"# {title}", ""] + self.banner()
-        out += [f"*Generated by GANDALF {__version__} on {report_time()} — {self.tier} tier — "
-                f"{len(self.order)} {self.unit}s.*", ""]
-        out += ["## Summary", "", self.intent["problem"]["text"], "", self.design["summary"], ""]
-        out += ["## Known limitations", "", _bullets(self.limitations()), ""]
-        out += ["## Needed from other teams", "", _bullets(self.needed_lines()), ""]
-        if self.clients:
-            out += ["## For other teams to adopt", "", _bullets(self.adopt_lines()), ""]
-        out += ["## Decisions needing attention", "",
-                "One line each; the full reasoning is in "
-                + ("[design.md](design.md) and [security-review.md](security-review.md)." if self.tier == "full"
-                   else "[technical.md](technical.md)."), "",
-                _bullets(self.attention()), ""]
-        out += ["## Review these first", "", _bullets(self.review_first()), ""]
-        out += ["## Slice map", ""] + self.slice_map()
-        out += ["## Sequence", ""] + self.build_grid() + self.sequence_lines() + [""]
-        out += ["## Risks and security", ""]
-        applied = [f"{f['id']} → {f['target_pr']}: {f['summary']}" for f in self.applied]
-        out.append(_bullets(applied + [f"{f['id']} {f['response']}ed: {f['summary']}" for f in self.security["findings"]
-                                       if f["response"] in ("accept", "transfer")]))
-        out.append("")
-        if self.changes:
-            out += ["## Change history", "", _bullets(self.change_lines()), ""]
-        out += ["## Notes", ""] + self.notes_lines()
-        out += ["## Files", ""]
-        files = [f"[{self.pr_file(pid)}]({self.pr_file(pid)})" for pid in self.order]
-        if self.tier == "full":
-            files = ["[intent-brief.md](intent-brief.md)", "[repo-context.md](repo-context.md)",
-                     "[design.md](design.md)", "[security-review.md](security-review.md)",
-                     "[sequence.md](sequence.md)"] + files
+    def pr_section(self, pid: str) -> list[str]:
+        """One PR as a section of spec.md (2.0): everything the builder needs that is this PR's own.
+        Contracts, decisions, conventions and the standing rules are referred to, not restated."""
+        pr = self.prs[pid]
+        nb = self.derived["needed_by"][pid]
+        risk = self.derived["risk"][pid]
+        out = [f"### {self.pr_heading(pid)}", "", f"*{pr['summary']}*", ""]
+        out += [
+            f"- **Type:** {self.pr_type_line(pr)}",
+            f"- **Lane {self.lane_of[pid]} of {len(self.derived['lanes'])}, wave {self.wave_of[pid]} of "
+            f"{len(self.derived['waves'])}:** "
+            + ("nothing earlier to wait for" if self.wave_of[pid] == 1 else f"starts once wave {self.wave_of[pid] - 1} has merged"),
+            f"- **Risk tags:** {', '.join(risk) if risk else 'None'}",
+            f"- **Size:** {self.size_line(pr)}",
+            f"- **Depends on:** {', '.join(pr['depends_on']) or 'None'}. **Needed by:** {', '.join(nb) or 'None'}",
+        ]
+        gates = self.derived["gates"].get(pid, [])
+        if gates:
+            out.append(f"- **Waits for other teams:** {', '.join(gates)} ready before this merges (see section 1)")
+        if pr.get("switched_on_by"):
+            needs = self.derived.get("switch_gates", {}).get(pid, [])
+            out.append(f"- **Switched on by configuration:** {', '.join(f'`{x}`' for x in pr['switched_on_by']['settings'])}"
+                       + (f", set only once {', '.join(needs)} {'is' if len(needs) == 1 else 'are'} ready" if needs else "")
+                       + ". Merging changes nothing until they're set")
+        if pr.get("size_reason"):
+            out.append(f"- **Kept whole because:** {pr['size_reason']}")
+        if pr.get("kept_separate_because"):
+            out.append(f"- **Kept separate because:** {pr['kept_separate_because']}")
+        changed = [e["id"] for e in self.changes if pid in (e.get("applied") or {}).get("prs", [])]
+        if changed:
+            out.append(f"- **Changed while building:** {', '.join(changed)} (section 8)")
+        out += ["", f"**Goal.** {pr['goal']}", ""]
+
+        out += [f"**Starting state.** {pr['starting_state']['description']}"
+                + (f" Already merged: {', '.join(pr['depends_on'])}." if pr["depends_on"] else ""), ""]
+        for eid, when_missing in checks.external_uses(pr):
+            e = self.external[eid]
+            if eid in self.derived["gates"].get(pid, []):
+                gate = f"merges only once {eid} is ready: {e['ready_when']}"
+            elif eid in self.derived.get("switch_gates", {}).get(pid, []):
+                gate = f"can merge before {eid} is ready; the settings that switch it on are set only once it is"
+            else:
+                gate = f"can merge before {eid} is ready"
+            settings_ = "; ".join(f"`{x['name']}` ({x['purpose']})" for x in e["parameters"]) or "none"
+            out += [f"Relies on **{eid}**, {e['summary']} ({self.delivery_status(eid)}); this {self.unit} {gate}. "
+                    f"Settings the code reads: {settings_}. While it isn't there: {when_missing}"
+                    + (f" Still to be settled by its owners: {'; '.join(e['open_questions'])}; if they differ from "
+                       "this spec, stop and report (section 7)." if e["open_questions"] and eid not in self.deliveries else ""),
+                    ""]
+        out += ["Confirm these before you start. If any isn't true, stop and report (section 7):", ""]
+        out += [f"- {fact}" for fact in pr["starting_state"]["facts"]]
+        out += ["", "**Read first.**", ""] + [f"- `{r['path']}` — {r['why']}" for r in pr["read_first"]] + [""]
+
+        if pr["contracts_used"]:
+            names = ", ".join(f"{cid} ({self.contracts[cid]['name']})" for cid in pr["contracts_used"])
+            out += [f"**Contracts used.** {names}, quoted in section 3. Match them exactly; do not change or "
+                    "\"improve\" them.", ""]
         else:
-            files = ["[technical.md](technical.md) — intent, repo context, design, security review, order of operations"] + files
+            out += ["**Contracts used.** None.", ""]
+        if pr["contracts_exposed"]:
+            parts = []
+            for cid in pr["contracts_exposed"]:
+                c = self.contracts[cid]
+                lives = f", in {', '.join(f'`{x}`' for x in c['files'])}" if c.get("files") else ""
+                parts.append(f"{cid} ({c['name']}{lives}): {c['why']}")
+            out += ["**Contract exposed.** Provide exactly the surface quoted in section 3; later work quotes it word "
+                    "for word. " + " ".join(parts), ""]
+        else:
+            out += ["**Contract exposed.** None.", ""]
+
+        out += ["**Changes.**", ""]
+        for ch in pr["changes"]:
+            line = f"- **{ch['action']}** `{ch['path']}` [{self.tag(pid, ch['path'])}] — {ch['what']}"
+            if ch.get("pattern"):
+                line += f" Follow: {ch['pattern']}."
+            named = checks.change_leaves(ch)
+            line += f" (leaf{'s' if len(named) > 1 else ''} {', '.join(named)})"
+            out.append(line)
+        out += ["", "What the decomposition asked for, in its own words. A detail named here and not above still "
+                "belongs to this " + self.unit + ":", ""]
+        out.append(_bullets([f"**{lid}** {self.leaves[lid]['deliverable']} → {self.leaves[lid]['outcome']}"
+                             + (f" (see {', '.join(f'`{e}`' for e in self.leaves[lid]['evidence'])})"
+                                if self.leaves[lid].get("evidence") else "")
+                             for lid in pr["leaves"]]))
+        out += ["", "Reuse, do not recreate:", "", _bullets([f"{r['what']} — `{r['where']}`" for r in pr["reuse"]]), ""]
+
+        if pr["steps"]:
+            out += ["**Steps.** One commit each, in order. A fresh session given this section and one step number "
+                    "builds only that step, on this PR's branch after the earlier steps' commits, and stops once that "
+                    "step's \"done when\" holds.", ""]
+            for i, st in enumerate(pr["steps"], 1):
+                out += [f"{i}. {st['what']}",
+                        f"   - Files: {', '.join(f'`{path}`' for path in st['changes'])}",
+                        f"   - Done when: {st['done_when']}"]
+            out.append("")
+
+        out += ["**Conventions.** " + ("; ".join(f"{c['rule']} (e.g. `{c['example']}`)" for c in pr["conventions"])
+                                       or "none beyond the repo's own") + ". The repo's rules are in section 2.", ""]
+
+        if pr["decisions"]:
+            out += ["**Decisions applied.**", ""]
+            out += [f"- **{did}:** {self.decisions[did]['decision']}" for did in pr["decisions"]]
+            out.append("")
+
+        b = pr["breaking"]
+        lines = [f"{'Breaking' if b['is_breaking'] else 'Not breaking'}: {b['detail']}"]
+        if pr.get("unobservable_how"):
+            lines.append(f"How this stays unobservable: {pr['unobservable_how']}")
+        if pr.get("switch_off"):
+            lines.append(f"How to switch it back off: {pr['switch_off']['how']}")
+        if pr.get("behaviour_change"):
+            lines.append(f"What changes for users or clients: {pr['behaviour_change']}")
+        if pr.get("rollback"):
+            lines.append(f"How to undo it: {pr['rollback']['how']}")
+        if pr.get("expand_contract"):
+            lines.append(f"This is the {pr['expand_contract']['role']} step; its pair is {pr['expand_contract']['pair']}.")
+        if pr.get("flag"):
+            lines.append(f"Introduces flag `{pr['flag']['name']}`, removed by {pr['flag']['removed_by']}.")
+        if pr.get("removes_flag"):
+            lines.append(f"Removes flag `{pr['removes_flag']}`.")
+        if pr.get("schema_change"):
+            lines.append(f"Schema change: {pr['schema_change']} Produce the migration the way this repo does, and make "
+                         "sure it runs before anything reads the change.")
+        out += ["**Breaking changes.** " + " ".join(lines), ""]
+
+        reqs = self.security_by_pr.get(pid, [])
+        considers = self.consider_by_pr.get(pid, [])
+        if reqs or considers:
+            out += ["**Security.**", ""]
+            out.append(_bullets([f"**{f['id']}** ({f['severity']}): {f['requirement']} — {f['citation']}" for f in reqs]
+                                + [f"Consider ({f['id']}, low, not required): {f['requirement']} — {f['citation']}"
+                                   for f in considers]))
+            out.append("")
+        else:
+            out += ["**Security.** None.", ""]
+
+        out += ["**Done when.**", ""]
+        for d in pr["done_when"]:
+            traces = f" ({', '.join(d['traces'])})" if d["traces"] else ""
+            out.append(f"- {d['outcome']}{traces}")
+        out += [f"- {line}" for line in self.must_hold(pr, common=False)]
+        out.append("- And the standing conditions in section 7.")
+        for f in self.carried_gaps:
+            if f["after"] == pid:
+                out += ["", f"The designer carried a gap the boundary check found after this {self.unit} ({f['id']}) rather "
+                            f"than replanning it: {f['summary']}. What the check asked for, left to the builder's and "
+                            f"reviewer's attention: {f['replan']} Designer's notes: {f['carried']['notes'] or 'none'}."]
+        out += ["", "**Out of scope.** " + ("; ".join(pr["out_of_scope"]) or "nothing beyond the standing rules")
+                + ". The standing rules are in section 7.", ""]
+        return out
+
+    def builders_lines(self) -> list[str]:
+        unit = self.unit
+        out = [f"Each {unit} is built by a fresh session with no memory of this conversation. Give it this document, "
+               f"read access to the plan folder, and the {unit} to build. It reads sections 1 to 5, then its own "
+               f"section in 6, then this one. A {unit} with steps can be built one step per session: give the session "
+               "the step number too.", "",
+               f"Before starting, confirm the {unit}'s starting state. Contracts are matched exactly as quoted in "
+               "section 3. The repo's own rules and conventions are in section 2, and the specific conventions in "
+               f"each {unit}'s section.", "",
+               f"**These hold for every {unit}.** How you show it is your work, the way this repo checks its own:", ""]
+        out += [f"- {line}" for line in self.common_must_hold()]
+        sources = check_sources(self.context)
+        if sources:
+            out.append(f"- Where the repo defines its tests and checks: {', '.join(f'`{x}`' for x in sources)}.")
+        out += ["", f"**Always out of scope.**", ""]
+        out += ["- Adding this plan, its files, or references to them (e.g. \"see PR-03\") to the repo, code comments, "
+                "commit messages or PR descriptions.",
+                f"- Changing files not listed under a {unit}'s Changes. A small fix inside a listed file or a test file "
+                "that leaves every contract, decision and starting-state fact as written is yours to make: carry on "
+                "and record it in your deviation note. Anything else: stop and report it.", ""]
+        out += ["**If reality doesn't match.** Two cases.", "",
+                f"A small difference you can settle inside the {unit}'s own files: a bug in a listed file, a test that "
+                "needs adjusting, a repo command that needs another argument. If the fix leaves every contract, "
+                "every decision and every starting-state fact as written, and adds no dependency or data change, "
+                f"make it and carry on. List each one in this note and hand it to the designer with the finished {unit}. "
+                "It never goes in the repo, a commit message or the PR description. Notes from the "
+                f"{unit}s this one depends on come with this spec, if there were any: read them before the starting "
+                "state, since a note can move where something lives.", "",
+                "```text", "GANDALF DEVIATION NOTE", "PR: <PR-nn>",
+                "- What: <the change, one line> | Where: <file:line> | Why: <what the spec didn't foresee>", "```", "",
+                "Anything else: a starting-state fact that isn't true, a contract you can't provide as written, a "
+                "change needed in a file not listed, a dependency or data change the spec doesn't name, a decision "
+                "that can't hold, infrastructure, a secret. Stop. Do not improvise or work around it. Write this "
+                "report and hand it to the designer:", "",
+                "```text", "GANDALF MISMATCH REPORT", "PR: <PR-nn>",
+                "Section: <the part of this spec that doesn't match>", "Expected: <what this spec says>",
+                "Found: <what is actually there>", "Evidence: <file:line references, command output>", "```", ""]
+        return out
+
+    def record_lines(self) -> list[str]:
+        out = []
+        replaced = [d for d in self.design["decisions"] if d["status"] == "superseded"]
+        out += ["### Decisions replaced along the way", ""]
+        if replaced:
+            by_id = {d["id"]: d for d in self.design["decisions"]}
+            for dec in replaced:
+                new = by_id.get(dec.get("superseded_by"), {})
+                why = f" ({new['source']['kind']}: {new['source']['ref']})" if new else ""
+                out.append(f"- **{dec['id']} → {dec.get('superseded_by')}**{why}. It said: {dec['decision']}")
+        else:
+            out.append("None.")
+        out += ["", "### Changes while building", "", _bullets(self.change_lines()) if self.changes else "None yet.", ""]
+        mm = self.plan.meta.get("mismatches", [])
+        out += ["### Repairs", "", _bullets([f"{report_time(x['at'])}: {x['pr']} — expected: {x['expected']}; found: {x['found']} "
+                                              f"(re-planned from {x['from_stage']}; merged and frozen: {', '.join(x['merged']) or 'none'})"
+                                              for x in mm]), ""]
+        files = ["[plan.json](plan.json), this plan as data", "[spec.html](spec.html), this document as a page"]
+        if getattr(self, "pdf_planned", False):
+            files.append("[spec.pdf](spec.pdf)")
         files += [f"[{self.request_file(e)}]({self.request_file(e)})" for e in [*self.external, *self.clients]]
-        out.append(_bullets(files + ["[plan.json](plan.json)"]))
-        out += ["", "Builder sessions need read access to this plan folder, e.g. `claude --add-dir <this folder>`.", ""]
+        if getattr(self, "split", False):
+            files.append("`prs/`, one self-contained copy of each " + self.unit + "'s section, for a builder that "
+                         "takes one file")
+        out += ["### Files", "", _bullets(files), ""]
+        return out
+
+    def spec_md(self) -> str:
+        """The consolidated spec (2.0): premise to record, with one section per PR."""
+        title = self.intent["title"]
+        unit = self.unit
+        out = [f"# {title}", ""] + self.banner()
+        out += [f"*Generated by GANDALF {__version__} on {report_time()}: {len(self.order)} {unit}s in "
+                f"{len(self.derived['lanes'])} lane{'s' if len(self.derived['lanes']) != 1 else ''}, "
+                f"{len(self.derived['waves'])} wave{'s' if len(self.derived['waves']) != 1 else ''}. "
+                f"Models: {self.models_line()}.*", ""]
+        # 1. the feature
+        out += ["## 1. The feature", ""]
+        feature = (self.plan.feature_text() or "").strip()
+        if feature:
+            out += ["As given:", ""] + [f"> {line}" if line else ">" for line in feature.splitlines()] + [""]
+        supporting = [f.name for f in self.plan.supporting_files()]
+        if supporting:
+            out += ["With: " + ", ".join(f"`{n}`" for n in supporting), ""]
+        out += [self.intent["problem"]["text"], "", self.design["summary"], ""]
+        out += self.intent_lines()
+        out += ["### Known limitations", "", _bullets(self.limitations()), ""]
+        out += ["### Needed from other teams", "", _bullets(self.needed_lines()), ""]
+        if self.clients:
+            out += ["### For other teams to adopt", "", _bullets(self.adopt_lines()), ""]
+        # 2. the repository
+        out += ["## 2. The repository", ""] + self.repo_context_lines(part="summary")
+        # 3. the design
+        out += ["## 3. The design", ""]
+        out += ["### Settled with you", "", _bullets(self.attention()), ""]
+        out += self.design_lines(current_only=True, with_slice_map=False, with_decomposition=False)
+        # 4. security
+        out += ["", "## 4. Security", ""] + self.security_lines(part="findings")
+        # 5. the work
+        out += ["## 5. The work", ""]
+        out += ["### Review these first", "", _bullets(self.review_first()), ""]
+        out += ["### Slice map", ""] + self.slice_map()
+        out += [f"### Where the {unit}s reach", ""] + self.reach_lines(getattr(self, "images", {}), part="summary")
+        out += ["### Order", ""] + self.sequence_lines() + [""]
+        out += self.sequence_doc_lines(include_order=False)
+        applied = [f"{f['id']} → {f['target_pr']}: {f['summary']}" for f in self.applied]
+        out += ["### Risks and security", "",
+                _bullets(applied + [f"{f['id']} {f['response']}ed: {f['summary']}" for f in self.security["findings"]
+                                    if f["response"] in ("accept", "transfer")]), ""]
+        # 6. the PRs
+        out += [f"## 6. The {unit}s", "",
+                f"One section per {unit}, in build order. Each is built by a fresh session that reads sections 1 to 5, "
+                "then its own section, then section 7.", ""]
+        for pid in self.order:
+            out += self.pr_section(pid)
+        # 7. for builders
+        out += ["## 7. For builders", ""] + self.builders_lines()
+        # 8. record
+        out += ["## 8. Record", ""] + self.record_lines()
+        # appendix: the evidence behind sections 2 to 5
+        out += ["## Appendix", "", "The detail behind the sections above, for whoever needs to check the plan's "
+                "working rather than read the plan.", ""]
+        out += ["### A. Repository detail", ""] + self.repo_context_lines(part="detail")
+        out += ["### B. Decomposition", ""] + self.decomposition_lines()[3:] + [""]
+        out += self.security_checked_lines()
+        detail = self.reach_lines(getattr(self, "images", {}), part="detail")
+        if detail:
+            out += [f"### D. Where each {unit} reaches", ""] + detail
+        out += ["### E. How the planning went", ""] + self.notes_lines()
         return "\n".join(out)
 
     def plan_json(self) -> dict:
         return {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": PLAN_SCHEMA_VERSION,
+            "spec": "spec.md",
             "generator": f"gandalf {__version__}",
             "generated": now(),
             "tier": self.tier,
@@ -1027,7 +1474,8 @@ class Planner:
             "design": {k: v for k, v in self.design.items() if k not in ("questions", "proposals", "pauses", "verify")},
             "decomposition": self.decompose["components"],
             "prs": [{**self.prs[pid],
-                     "file": self.pr_file(pid),
+                     "section": self.pr_link(pid),
+                     "file": self.pr_file(pid) if getattr(self, "split", False) else None,
                      "lane": self.lane_of[pid],
                      "wave": self.wave_of[pid],
                      "needed_by": self.derived["needed_by"][pid],
@@ -1055,6 +1503,8 @@ class Planner:
             "questions": self.plan.answers["questions"],
             "pauses": self.plan.answers["pauses"],
             "metrics": self.plan.metrics(),
+            "models": {"settings": {k: v for k, v in settings.for_plan(self.plan).items() if k != "source"},
+                       "used": self.models_used()},
             "how_planning_went": diagnose.summarise(self.plan.log_entries()),
             "checks": {"warnings": self.report.warnings, "notes": self.report.notes},
             "omissions": self.plan.meta.get("omissions", []),
@@ -1063,15 +1513,20 @@ class Planner:
         }
 
 
-def render_plan(plan: PlanState) -> Rendered:
+OLD_OUTPUTS = ("plan.md", "technical.md", "intent-brief.md", "repo-context.md", "design.md", "security-review.md",
+               "sequence.md", "plan.html", "plan.pdf")
+
+
+def render_plan(plan: PlanState, split: bool = False) -> Rendered:
+    """Write the plan: spec.md with its page and PDF, plan.json, the diagrams, and the requests and
+    handoffs for other teams. With ``split``, also one self-contained spec per PR under prs/ (2.0)."""
     p = Planner(plan)
+    p.split = split
     root = plan.plan_dir
     result = Rendered(tier=p.tier, report=p.report)
-    prs_dir = root / "prs"
-    if prs_dir.exists():
-        for old in prs_dir.glob("pr-*.md"):
-            old.unlink()
-    prs_dir.mkdir(parents=True, exist_ok=True)
+    for name in OLD_OUTPUTS:                      # renders from before 2.0
+        if (root / name).exists():
+            (root / name).unlink()
 
     requests_dir = root / "requests"
     if requests_dir.exists():
@@ -1094,47 +1549,81 @@ def render_plan(plan: PlanState) -> Rendered:
             path.write_text(p.handoff_md(eid))
             result.files.append(path)
 
-    for pid in p.order:
-        text = p.pr_spec(pid)
-        path = root / p.pr_file(pid)
-        path.write_text(text)
-        result.files.append(path)
+    prs_dir = root / "prs"
+    if prs_dir.exists():
+        for old in prs_dir.glob("pr-*.md"):
+            old.unlink()
+        if not split and not any(prs_dir.iterdir()):
+            prs_dir.rmdir()
+    if split:
+        prs_dir.mkdir(parents=True, exist_ok=True)
+        for pid in p.order:
+            path = root / p.pr_file(pid)
+            path.write_text(p.pr_spec(pid))
+            result.files.append(path)
 
-    docs = {}
-    if p.tier == "full":
-        docs = {
-            "intent-brief.md": "\n".join([f"# Intent brief: {p.intent['title']}", ""] + p.banner() + p.intent_lines()),
-            "repo-context.md": "\n".join(["# Repo context", ""] + p.banner() + p.repo_context_lines()),
-            "design.md": "\n".join([f"# Design: {p.intent['title']}", ""] + p.banner() + p.design_lines()),
-            "security-review.md": "\n".join(["# Security review", ""] + p.security_lines()),
-            "sequence.md": "\n".join(["# Sequence", ""] + p.banner() + p.sequence_doc_lines()),
-        }
-    else:
-        docs = {"technical.md": p.technical_md()}
-    stale_names = (("technical.md",) if p.tier == "full" else
-                   ("intent-brief.md", "repo-context.md", "design.md", "security-review.md", "sequence.md"))
-    for name in stale_names:
-        if (root / name).exists():
-            (root / name).unlink()
-    docs["plan.md"] = p.plan_md()
-    for name, text in docs.items():
-        (root / name).write_text(text)
-        result.files.append(root / name)
+    # the reach report and diagrams come before the spec, which shows them
+    p.compute_reach()
+    p.images = p.reach_diagrams()
+    p.pdf_planned = document.typst_available()
+    report_dir = root / "report"
+    if report_dir.exists():
+        for old in report_dir.glob("*.svg"):
+            old.unlink()
+    report_dir.mkdir(exist_ok=True)
+    for rel, svg in p.images.items():
+        (root / rel).write_text(svg)
+        result.files.append(root / rel)
+    if p.reach:
+        (report_dir / "reach.json").write_text(json.dumps(p.reach, indent=1, ensure_ascii=False) + "\n")
+        result.files.append(report_dir / "reach.json")
+        if not p.reach["map"]:
+            result.notes.append(f"The reach report shows each {p.unit}'s files only: install the code map "
+                                f"({codemap.INSTALL_HINT}) for the code each one reaches.")
+    elif p.reach_error:
+        result.notes.append(f"The reach report failed and was logged ({p.reach_error}); the plan is complete without it.")
+    md = p.spec_md()
+    (root / "spec.md").write_text(md)
+    result.files.append(root / "spec.md")
     (root / "plan.json").write_text(json.dumps(p.plan_json(), indent=2, ensure_ascii=False) + "\n")
     result.files.append(root / "plan.json")
     preview = root / "design-for-review.md"
     if preview.exists():
         preview.unlink()
-    for stale in ("plan.pdf", "plan.html"):              # written by versions before 0.18 (D-184)
-        if (root / stale).exists():
-            (root / stale).unlink()
+    write_documents(p, md, result)
     plan.meta.pop("format", None)
     plan.save()
     return result
 
 
+def write_documents(p: Planner, md: str, result: Rendered) -> None:
+    """spec.html always; spec.pdf when Typst is installed. Neither ever fails a render."""
+    root = p.plan.plan_dir
+    svgs = {rel: svg for rel, svg in p.images.items()}
+    logo = None
+    if document.LOGO.is_file():
+        import base64
+        logo = "data:image/png;base64," + base64.b64encode(document.LOGO.read_bytes()).decode()
+    (root / "spec.html").write_text(document.page_html(md, p.intent["title"], svgs, logo))
+    result.files.append(root / "spec.html")
+    pdf = root / "spec.pdf"
+    try:
+        document.write_pdf(md, p.intent["title"], {rel: root / rel for rel in p.images}, pdf)
+    except document.MissingTool as exc:
+        if pdf.exists():                                  # never leave a copy of an older plan
+            pdf.unlink()
+        result.notes.append(f"spec.pdf was not written: {exc}. spec.md and spec.html are complete without it.")
+    except Exception as exc:  # noqa: BLE001 - a typesetting failure must not lose the plan
+        if pdf.exists():
+            pdf.unlink()
+        p.plan.record_internal_error("render: pdf", exc)
+        result.notes.append(f"spec.pdf was not written: the typesetter failed ({type(exc).__name__}); it is logged.")
+    else:
+        result.files.append(pdf)
+
+
 def _review_lines(security: dict | None) -> list[str]:
-    """What the security review of this design asks for, shown at the checkpoint (D-149)."""
+    """What the security review of this design asks for, shown at the checkpoint."""
     if not security:
         return []
     required = {f["id"] for f in checks.applied_findings(security)}
@@ -1159,12 +1648,12 @@ def _review_lines(security: dict | None) -> list[str]:
 
 
 def render_design_preview(plan: PlanState) -> Path:
-    """Write design.md for the design checkpoint (§6.1), before the plan is finished."""
+    """Write design.md for the design checkpoint, before the plan is finished."""
     design, intent = plan.stage("design"), plan.stage("intent")
     lines = [f"# Design for review: {intent['title']}", "",
              "*Draft for the design checkpoint. Approve it, or say what to change.*", "", design["summary"], ""]
     lines += ["## Known limitations", ""] + ([f"- **{l['summary']}** {l['detail']}" for l in design.get("limitations", [])] or ["None."])
-    # current decisions only; replaced ones go to a short history at the end (D-83)
+    # current decisions only; replaced ones go to a short history at the end
     current = [d for d in design["decisions"] if d["status"] != "superseded"]
     replaced = [d for d in design["decisions"] if d["status"] == "superseded"]
     lines += ["", "## Needed from other teams", ""]
@@ -1192,6 +1681,12 @@ def render_design_preview(plan: PlanState) -> Path:
     else:
         lines.append("None.")
     lines += _review_lines(plan.stage("security"))
+    replaced_shapes = [x["replaces"] for x in design["data_model"] if x.get("replaces")]
+    if replaced_shapes:
+        # the one call that decides whether this is one release or several
+        lines += ["", "## What becomes of what this replaces", ""]
+        lines += [f"- **{r['what']}** (`{r['where']}`) {_fate(r)}. Settled by {r['source']['kind']} {r['source']['ref']}."
+                  for r in replaced_shapes]
     lines += ["", "## Decisions", ""]
     for dec in current:
         lines.append(f"- **{dec['id']}: {dec['summary']}** {dec['decision']} *(source: {dec['source']['kind']} — {dec['source']['ref']})*")

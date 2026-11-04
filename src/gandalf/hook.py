@@ -27,7 +27,7 @@ def main() -> int:
         return 0
 
     from gandalf.adapters import extract_json
-    from gandalf.cli import describe_next, submit
+    from gandalf.cli import describe_next, escalation_note, submit
     from gandalf.state import OldPlanError, PlanState
 
     stage, plan_dir = m.group("stage"), Path(m.group("plan"))
@@ -53,8 +53,13 @@ def main() -> int:
                 f"It is logged in {plan.dir / 'log.jsonl'}. Tell the designer; don't keep retrying.")}))
             return 0
     if errors:
-        reason = (f"GANDALF rejected {stage} ({len(errors)} problem(s)). Fix them and write the file again:\n"
-                  + "\n".join(f"- {e}" for e in errors))
+        note = escalation_note(plan, stage)
+        if note:
+            reason = (f"GANDALF rejected {stage} ({len(errors)} problem(s)):\n"
+                      + "\n".join(f"- {e}" for e in errors) + "\n" + note)
+        else:
+            reason = (f"GANDALF rejected {stage} ({len(errors)} problem(s)). Fix them and write the file again:\n"
+                      + "\n".join(f"- {e}" for e in errors))
         print(json.dumps({"decision": "block", "reason": reason}))
         return 0
     plan.archive_inbox_file(Path(path), stage)

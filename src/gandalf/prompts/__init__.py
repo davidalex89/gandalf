@@ -1,4 +1,4 @@
-"""Prompt assembly: each stage sees only what it needs (DESIGN.md §11.3, D-52).
+"""Prompt assembly: each stage sees only what it needs.
 
 | Stage     | Sees                                                        | Doesn't see                  |
 |-----------|-------------------------------------------------------------|------------------------------|
@@ -36,7 +36,7 @@ MAX_FILE_CHARS = 8_000
 
 def check_sources(context: dict | None) -> list[str]:
     """The files where the repo defines how it tests, lints and type-checks: a pointer for
-    builders, never a command for them to copy (D-143)."""
+    builders, never a command for them to copy."""
     found = [checks.cite_path(e) for key in ("test_commands", "check_commands")
              for c in (context or {}).get(key) or [] for e in c["evidence"]]
     return sorted(dict.fromkeys(found))
@@ -78,7 +78,7 @@ def _intent_ids(plan: PlanState) -> dict:
 
 
 def _fixes_to_build(plan: PlanState) -> list[dict]:
-    """The security review's fixes a PR must build in (D-149), in its own words."""
+    """The security review's fixes a PR must build in, in its own words."""
     security = plan.stage("security")
     if not security:
         return []
@@ -91,7 +91,7 @@ def _fixes_to_build(plan: PlanState) -> list[dict]:
 # What the breakdown and sequencing read from the approved design: what was decided and what
 # must exist, not why. Decision context and alternatives, the security inventory, suspected
 # defects and known limitations are for the designer and the reviewers; they were a third of the
-# design block in the decompose and sequence prompts (0.12.0 QA review, D-172).
+# design block in the decompose and sequence prompts.
 PLANNING_DESIGN_KEYS = ("summary", "capabilities", "components", "data_model", "contracts", "wiring",
                         "precursors", "external", "assumptions", "retired_assumptions")
 PLANNING_DECISION_KEYS = ("id", "summary", "decision", "consequences", "source", "status")
@@ -181,6 +181,28 @@ def _own_answers(plan: PlanState, stage: str) -> str:
             + "\n".join(lines) + "\n")
 
 
+def _earlier_answers(plan: PlanState, stage: str) -> str:
+    """Answers the designer gave to other stages' questions. The context stage asked what happens
+    to existing duplicates, the intent stage asked again, and the designer answered twice."""
+    lines = []
+    for qid, q in plan.answers["questions"].items():
+        if q["stage"] == stage:
+            continue
+        if q["status"] in ("answered", "accepted_proposal"):
+            how = "accepted the proposal" if q["status"] == "accepted_proposal" else "answered"
+            lines.append(f"- **{qid}** ({q['stage']} stage) {q['question']} → designer {how}: {q['answer']}")
+        elif q["status"] == "delegated":
+            topic = f" (in their words: {q['answer']})" if q.get("answer") else ""
+            lines.append(f"- **{qid}** ({q['stage']} stage) {q['question']} → the designer delegated this to the "
+                         f"planner{topic}: decide it, record the choice where this stage records assumptions "
+                         f"(with `ref` {qid} where it has one), and don't ask about it again.")
+    if not lines:
+        return ""
+    return ("## Answers the designer gave at earlier stages\n\nOther stages asked these and the designer settled "
+            "them. They hold for this stage too: don't ask them again, in these words or others, and cite them "
+            "as sources (`ref`) where this stage records sources.\n\n" + "\n".join(lines) + "\n")
+
+
 def _verification(plan: PlanState, stage: str) -> str:
     v = plan.meta.get("verify", {}).get(stage)
     if not v or v.get("status") != "done":
@@ -194,7 +216,7 @@ def _verification(plan: PlanState, stage: str) -> str:
 
 
 def _allowed(stage: str) -> str:
-    """The exact values every enum field accepts, generated from the schema (D-64)."""
+    """The exact values every enum field accepts, generated from the schema."""
     lines = ["## Allowed values", "", "Use exactly these values (lowercase, with underscores):", ""]
     lines += [f"- `{path}`: {', '.join(f'`{c}`' for c in choices)}"
               for path, choices in allowed_values(STAGE_SCHEMAS[stage])]
@@ -204,7 +226,7 @@ def _allowed(stage: str) -> str:
 def build(plan: PlanState, stage: str, *, excerpts: bool = False, budget: int = 60_000) -> str:
     sections = [_template("_rules"), _template(stage), _allowed(stage)]
     if stage == "context":
-        # the title only, so the trace lands on the right code (D-119); never the description,
+        # the title only, so the trace lands on the right code; never the description,
         # so this stage still records only how the repo works
         title = plan.meta.get("feature", {}).get("title")
         if title:
@@ -224,12 +246,8 @@ def build(plan: PlanState, stage: str, *, excerpts: bool = False, budget: int = 
         previous = plan.previous_design()
         if previous:
             # the whole previous design, not just its decisions: guidance refers to its
-            # contracts and inventory by id, and later PRs quote contracts word for word (D-81)
-            sections.append(
-                "## The previous design\n\nThis is a re-run. Start from this design and change only what the "
-                "guidance and answers below require. Keep every decision (mark replaced ones `superseded` with "
-                "`superseded_by`; never delete one), and keep every contract's id and exact wording unless a "
-                "finding or answer requires changing it.\n")
+            # contracts and inventory by id, and later PRs quote contracts word for word
+            sections.append(_template("design_patch"))
             sections.append(_block("Previous design", _strip_open(previous)))
         if plan.meta.get("deliveries"):
             sections.append(_block("External dependencies as delivered: update the design to match",
@@ -259,13 +277,14 @@ def build(plan: PlanState, stage: str, *, excerpts: bool = False, budget: int = 
         sections.append(_block("Intent ids", _intent_ids(plan)))
         sections.append(_block("Security fixes to build in", _fixes_to_build(plan)))
         # what the designer already settled, the same list the security reviewer gets, so a state
-        # that matches it is not raised as a gap (D-160); still no planning conversation (D-52)
+        # that matches it is not raised as a gap; still no planning conversation
         settled = checks.settled(plan.stage("intent"), design, plan.security_reviews())
         if settled:
             sections.append(_block("Already settled (a state that matches one of these is not a gap)", settled))
         sequence = plan.stage("sequence")
         prs = [{k: p.get(k) for k in ("id", "title", "type", "capability", "goal", "depends_on", "security",
-                                      "contracts_exposed", "schema_change", "switch_off") if p.get(k) is not None}
+                                      "contracts_exposed", "schema_change", "switch_off", "behaviour_change", "rollback")
+                                      if p.get(k) is not None}
                | {"changes": [{"path": c["path"], "what": c["what"]} for c in p["changes"]],
                   "done_when": [d["outcome"] for d in p["done_when"]]} for p in sequence["prs"]]
         sections.append(_block("PR list", prs))
@@ -284,7 +303,7 @@ def build(plan: PlanState, stage: str, *, excerpts: bool = False, budget: int = 
         if settled:
             sections.append(_block("Already settled (re-open only with a new reason)", settled))
     if stage in ("context", "intent", "decompose", "sequence"):
-        # a re-run starts from its own last output instead of redoing the work (D-95); the
+        # a re-run starts from its own last output instead of redoing the work; the
         # security reviewer and the boundary check always start fresh, so they stay independent
         previous = plan.previous_output(stage)
         if previous:
@@ -296,6 +315,10 @@ def build(plan: PlanState, stage: str, *, excerpts: bool = False, budget: int = 
     answers = _own_answers(plan, stage)
     if answers:
         sections.append(answers)
+    if stage not in ("security", "boundary"):      # the reviews stay independent of the conversation
+        earlier = _earlier_answers(plan, stage)
+        if earlier:
+            sections.append(earlier)
     verification = _verification(plan, stage)
     if verification:
         sections.append(verification)
@@ -307,7 +330,7 @@ def build(plan: PlanState, stage: str, *, excerpts: bool = False, budget: int = 
 
 
 def build_monitor(plan: PlanState, entry: dict) -> str:
-    """The prompt for judging what a PR's branch changed (§5.11): flagged signals only."""
+    """The prompt for judging what a PR's branch changed: flagged signals only."""
     from gandalf import monitor
 
     design, sequence = plan.stage("design"), plan.stage("sequence")

@@ -1,4 +1,4 @@
-"""Target-repo identity, plan-folder location and the write guard (DESIGN.md §8.5, §10.1)."""
+"""Target-repo identity, plan-folder location and the write guard."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def iter_files(root: Path):
 
 
 def fingerprint(root: Path) -> str:
-    """Hash every file's relative path and contents (reduced mode, §8.5)."""
+    """Hash every file's relative path and contents (reduced mode)."""
     digest = hashlib.sha256()
     for rel in iter_files(root):
         digest.update(rel.as_posix().encode())
@@ -121,7 +121,7 @@ def is_inside(child: Path, parent: Path) -> bool:
 
 
 def guard_plan_dir(plan_dir: Path, repo: RepoInfo) -> Path:
-    """Refuse any plan folder inside the target repo, whatever --out says (D-44)."""
+    """Refuse any plan folder inside the target repo, whatever --out says."""
     resolved = plan_dir.expanduser().resolve()
     if is_inside(resolved, repo.path):
         raise GuardError(

@@ -1,4 +1,4 @@
-"""Command adapter: drive every stage with any model command (DESIGN.md §11.2).
+"""Command adapter: drive every stage with any model command.
 
 The prompt goes to the command on stdin; a JSON object is read from its stdout. Output
 that fails validation is sent back with the errors, up to ``max_retries`` times. The
@@ -93,6 +93,15 @@ def answer_interactively(plan: PlanState, action: dict) -> dict:
         if p["kind"] == "restructuring":
             notes = _ask("   Your guidance: ")
             pauses.append({"id": pid, "decision": "guidance", "notes": notes})
+        elif p["kind"] == "route":
+            # a review sent the plan back again: rerun as it asks, or carry the finding
+            print("   rerun: do as the review asks, with another review after. carry: keep the plan; the finding "
+                  "goes to the builder as a requirement.")
+            reply = ""
+            while reply not in ("rerun", "carry"):
+                reply = {"r": "rerun", "c": "carry"}.get(_ask("   Rerun or carry? [r/c]: ").lower()[:1], "")
+            notes = _ask("   Why (optional): ")
+            pauses.append({"id": pid, "decision": reply, "notes": notes})
         else:
             reply = _ask("   Approve? [y/n]: ").lower()
             notes = _ask("   Notes (optional): ")
@@ -102,7 +111,9 @@ def answer_interactively(plan: PlanState, action: dict) -> dict:
 
 
 def run_loop(plan: PlanState, model_cmd: str, *, budget: int = 60_000, max_retries: int = 3) -> int:
-    from gandalf.cli import describe_next, submit
+    """``model_cmd`` may carry ``{model}``: each stage then runs on the model its settings name."""
+    from gandalf import settings
+    from gandalf.cli import describe_next, stage_model, submit
     from gandalf.render import RenderError, render_plan
     from gandalf.worktree import run_verification
 
@@ -116,7 +127,9 @@ def run_loop(plan: PlanState, model_cmd: str, *, budget: int = 60_000, max_retri
             except RenderError as exc:
                 print(f"gandalf: {exc}", file=sys.stderr)
                 return 1
-            print(f"\nPlan written ({result.tier} tier): {plan.plan_dir / 'plan.md'}")
+            print(f"\nSpec written: {plan.plan_dir / 'spec.md'}")
+            for note in result.notes:
+                print(f"  note: {note}")
             return 0
         if kind == "verify":
             print(f"\nRunning the repo's tests in an isolated worktree for {action['stage']}...")
@@ -136,11 +149,18 @@ def run_loop(plan: PlanState, model_cmd: str, *, budget: int = 60_000, max_retri
             continue
 
         stage = action["stage"]
+        templated = "{model}" in model_cmd
         prompt = prompts.build(plan, stage, excerpts=True, budget=budget)
-        print(f"\n[{stage}] asking the model...")
+        model, _ = stage_model(plan, stage)
+        print(f"\n[{stage}] asking {model if templated else 'the model'}...")
         for attempt in range(max_retries + 1):
+            # each attempt asks the model its rejections so far call for
+            model, moved = stage_model(plan, stage)
+            command = settings.command_for(model_cmd, model)
+            if attempt and moved and templated:
+                print(f"[{stage}] moving up to {model}{moved}.", file=sys.stderr)
             try:
-                raw = call_model(model_cmd, prompt)
+                raw = call_model(command, prompt)
             except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
                 errors = [str(exc)]
                 plan.log("model_error", stage=stage, via="run", error=str(exc))
@@ -151,7 +171,7 @@ def run_loop(plan: PlanState, model_cmd: str, *, budget: int = 60_000, max_retri
                     errors = [f"the reply had no JSON object: {exc}"]
                     plan.record_rejection(stage, "run", errors, raw)
                 else:
-                    errors = submit(plan, stage, data, via="run")
+                    errors = submit(plan, stage, data, via="run", model=model if templated else model_cmd)
             if not errors:
                 print(f"[{stage}] accepted.")
                 break

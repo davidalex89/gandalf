@@ -1,15 +1,17 @@
-"""Command-line interface: scan, run, prompt, submit, render, repair, deliver, monitor (DESIGN.md §11.2, D-49, D-93, §5.11)."""
+"""Command-line interface: scan, run, prompt, submit, render, repair, deliver, monitor."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
-from gandalf import __version__
+from gandalf import __version__, settings
 from gandalf.repo import GuardError, default_plan_dir, guard_plan_dir, identify, is_inside
 from gandalf.scan import scan_repo
+from gandalf.settings import SettingsError
 from gandalf.state import MODEL_STAGES, OldPlanError, PlanExistsError, PlanState
 
 
@@ -21,13 +23,18 @@ def _err(msg: str) -> None:
     print(f"gandalf: {msg}", file=sys.stderr)
 
 
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
 def _feature_title(text: str | None, title: str | None) -> str:
+    """Without --title, the first sentence of the first line, at most eight words."""
     if title:
         return title
     for line in (text or "").splitlines():
         line = line.strip().lstrip("#").strip()
         if line:
-            return " ".join(line.split()[:8])
+            first = SENTENCE_END.split(line, 1)[0].rstrip(".!?:;,")
+            return " ".join(first.split()[:8])
     return "feature"
 
 
@@ -42,14 +49,42 @@ def open_or_create_plan(args) -> PlanState:
     plan_dir = guard_plan_dir(plan_dir, info)
     scan = scan_repo(info)
     supporting = [Path(p) for p in getattr(args, "supporting", None) or []]
-    return PlanState.create(
+    flags = settings.parse_flags(getattr(args, "model", None), getattr(args, "tier", None),
+                                 getattr(args, "escalate_after", None))
+    plan = PlanState.create(
         plan_dir, repo=info.to_dict(), scan=scan, feature_title=title,
         feature_text=text, supporting=supporting,
         force_full=getattr(args, "full", False))
+    # the plan keeps the settings it was first scanned with; a re-scan adds only new flags
+    saved = plan.meta.get("models")
+    layers = [("plan", saved)] if saved else [("config", settings.load_user())]
+    settings.save_for_plan(plan, settings.resolve(*layers, ("command line", flags)))
+    return plan
 
 
 def plan_from_args(args) -> PlanState:
     return PlanState(Path(args.out).expanduser())
+
+
+def stage_model(plan: PlanState, stage: str) -> tuple[str, str]:
+    """The model for a stage's next attempt, and a note when it has moved up a tier after
+    rejections, e.g. " (moved up from haiku after 2 rejections)"."""
+    n = plan.rejections(stage)
+    model, _, base = settings.model_for_attempt(settings.for_plan(plan), stage, n)
+    return model, (f" (moved up from {base} after {n} rejections)" if model != base else "")
+
+
+def escalation_note(plan: PlanState, stage: str) -> str:
+    """After a rejection: when the next attempt moves up a tier, say so and how to start it.
+    A stronger model starts clean rather than inheriting a weaker one's attempt."""
+    if stage not in MODEL_STAGES:
+        return ""
+    failed = plan.log_entries()[-1].get("model")
+    model, moved = stage_model(plan, stage)
+    if not moved or model == failed:
+        return ""
+    return (f"The next attempt runs on {model}{moved}: start a fresh agent on it with "
+            f"`gandalf prompt {stage} --out \"{plan.plan_dir}\"` instead of sending these problems back.")
 
 
 def describe_next(plan: PlanState) -> str:
@@ -59,7 +94,8 @@ def describe_next(plan: PlanState) -> str:
         why = f" ({action['reason']})" if action.get("reason") else ""
         draft = (" The sequence is a draft until the boundary check passes."
                  if action["stage"] == "boundary" else "")
-        return (f"next: produce the {action['stage']} stage{why} — "
+        model, moved = stage_model(plan, action["stage"])
+        return (f"next: produce the {action['stage']} stage on {model}{moved}{why} — "
                 f"`gandalf prompt {action['stage']} --out \"{plan.plan_dir}\"`.{draft}")
     if a == "answer":
         lines = [f"next: the designer answers open items from {action['stage']} (ask one at a time):"]
@@ -134,17 +170,32 @@ def _load_json(path: str) -> dict:
     return extract_json(text)
 
 
-def submit(plan: PlanState, stage: str, data: dict, via: str = "cli") -> list[str]:
+def submit(plan: PlanState, stage: str, data: dict, via: str = "cli", model: str | None = None) -> list[str]:
     """Validate and store a stage output or designer answers. Returns errors.
-    Every rejection and acceptance is logged to ``.state/log.jsonl`` (D-67)."""
+    Every rejection and acceptance is logged to ``.state/log.jsonl``."""
+    from gandalf import patch as design_patch
     from gandalf.render import render_design_preview
-    from gandalf.schemas import normalise
+    from gandalf.schema import check
+    from gandalf.schemas import DESIGN_PATCH, normalise
     from gandalf.validate import validate_stage
 
+    if stage in MODEL_STAGES:
+        # the model the settings gave this attempt, unless the caller says otherwise
+        model = model or stage_model(plan, stage)[0]
+    submitted = data
+    if stage == "design" and design_patch.is_patch(data):
+        # a re-run answers with what changed; the stored design takes the patch
+        previous = plan.previous_design()
+        errors = [design_patch.NO_BASE] if previous is None else check(data, DESIGN_PATCH)
+        if not errors:
+            data, errors = design_patch.apply(previous, data)
+        if errors:
+            plan.record_rejection(stage, via, errors, submitted, model=model)
+            return errors
     data, normalised = normalise(stage, data)
     report = validate_stage(plan, stage, data)
     if not report.ok:
-        plan.record_rejection(stage, via, report.errors, data)
+        plan.record_rejection(stage, via, report.errors, submitted, model=model)
         return report.errors
     if stage == "answers":
         problems = plan.apply_answers(data)
@@ -153,18 +204,60 @@ def submit(plan: PlanState, stage: str, data: dict, via: str = "cli") -> list[st
         else:
             plan.record_acceptance(stage, via, data=data)
             if plan.next_action()["action"] == "approve":
-                # a carried finding (D-180) closed the review: the checkpoint page shows it (D-149)
+                # a carried finding closed the review: the checkpoint page shows it
                 render_design_preview(plan)
         return problems
     previous = plan.meta["stages"].get(stage, {})
     rerun_reason = previous.get("reason") if previous.get("status") == "needs_rerun" else (
         f"{stage} produced again" if plan.stage(stage) is not None or plan.history(stage) else None)
     plan.store_stage(stage, data)
-    plan.record_acceptance(stage, via, normalised, data, rerun_reason)
+    # the log keeps the digest of what was sent (a patch, on a design re-run), so a replay sends the same
+    plan.record_acceptance(stage, via, normalised, submitted, rerun_reason, model=model)
     if plan.next_action()["action"] == "approve":
-        # the design has been reviewed for security: the checkpoint page shows both (D-149)
+        # the design has been reviewed for security: the checkpoint page shows both
         render_design_preview(plan)
     return []
+
+
+def cmd_models(args) -> int:
+    """Show a plan's models per stage, or change them with --set / --tier."""
+    plan = plan_from_args(args)
+    current = settings.for_plan(plan)
+    if args.set or args.tier or args.escalate_after is not None:
+        flags = settings.parse_flags(args.set, args.tier, args.escalate_after)
+        settings.save_for_plan(plan, settings.resolve(("plan", current), ("command line", flags)))
+        current = settings.for_plan(plan)
+    if args.json:
+        _out(json.dumps({s: settings.model_for(current, s)[0] for s in settings.STAGES}, indent=2))
+        return 0
+    _out(f"Models for {plan.plan_dir}:")
+    for line in settings.table(current):
+        _out(line)
+    return 0
+
+
+def cmd_config(args) -> int:
+    """Show the settings a new plan would get and where each comes from, or write a starter file."""
+    path = settings.config_path()
+    if args.init:
+        if path.exists():
+            _err(f"{path} already exists; edit it, or delete it to start again")
+            return 1
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(settings.TEMPLATE)
+        _out(f"Wrote {path}.")
+        return 0
+    resolved = settings.resolve(("config", settings.load_user()))
+    if args.json:
+        _out(json.dumps(resolved, indent=2))
+        return 0
+    _out(f"Settings file: {path}" + ("" if path.exists() else " (not created; `gandalf config --init` writes one)"))
+    _out("A new plan would run:")
+    for line in settings.table(resolved):
+        _out(line)
+    cmd = resolved["run"].get("model_cmd")
+    _out(f"  gandalf run command: {cmd}" if cmd else "  gandalf run command: not set (give --model-cmd)")
+    return 0
 
 
 def cmd_submit(args) -> int:
@@ -174,11 +267,14 @@ def cmd_submit(args) -> int:
     except ValueError as exc:
         _err(f"could not read JSON from {args.file}: {exc}")
         return 2
-    errors = submit(plan, args.stage, data)
+    errors = submit(plan, args.stage, data, model=getattr(args, "model", None))
     if errors:
         _err(f"{args.stage} rejected ({len(errors)} problem(s)):")
         for e in errors:
             print(f"  - {e}", file=sys.stderr)
+        note = escalation_note(plan, args.stage)
+        if note:
+            _err(note)
         return 1
     _out(f"{args.stage} accepted.")
     if plan.log_entries()[-1].get("duplicate"):
@@ -206,7 +302,7 @@ def cmd_prompt(args) -> int:
         return 2
     from gandalf.state import STAGES
     missing = [s for s in STAGES[:STAGES.index(stage)] if plan.status(s) != "done"]
-    if missing:                          # a clear answer, not an internal error (D-106)
+    if missing:                          # a clear answer, not an internal error
         _err(f"the {stage} prompt needs the {missing[0]} stage first: it isn't complete yet.")
         _out(describe_next(plan))
         return 1
@@ -215,6 +311,9 @@ def cmd_prompt(args) -> int:
         _out(f"Running the requested verification for {stage} in an isolated worktree...", )
         run_verification(plan, stage)
     text = prompts.build(plan, stage, excerpts=args.excerpts, budget=args.budget)
+    model, moved = stage_model(plan, stage)
+    # on stderr, so it reaches whoever runs the stage without becoming part of the prompt
+    print(f"Run the {stage} stage on {model}{moved}.", file=sys.stderr)
     if args.file:
         _write_prompt(plan, args.file, text, f"Prompt for {stage}")
     else:
@@ -223,7 +322,7 @@ def cmd_prompt(args) -> int:
 
 
 def _write_prompt(plan: PlanState, file: str, text: str, what: str) -> None:
-    """A prompt is plan content, so it never lands inside the target repo either (D-44, D-171)."""
+    """A prompt is plan content, so it never lands inside the target repo either."""
     path = Path(file).expanduser()
     if is_inside(path.resolve(), Path(plan.meta["repo"]["path"])):
         raise GuardError(f"refusing to write {what.lower()} inside the target repo ({plan.meta['repo']['path']}); "
@@ -238,15 +337,17 @@ def cmd_render(args) -> int:
 
     plan = plan_from_args(args)
     try:
-        result = render_plan(plan)
+        result = render_plan(plan, split=getattr(args, "split", False))
     except RenderError as exc:
         _err(str(exc))
         return 1
-    _out(f"Rendered the {result.tier} tier to {plan.plan_dir}:")
+    _out(f"Rendered to {plan.plan_dir}:")
     for f in result.files:
         _out(f"  {f.relative_to(plan.plan_dir)}")
     for w in result.report.warnings:
         _out(f"  warning: {w}")
+    for note in result.notes:
+        _out(f"  note: {note}")
     return 0
 
 
@@ -254,8 +355,13 @@ def cmd_run(args) -> int:
     from gandalf.adapters.command import run_loop
 
     plan = open_or_create_plan(args)
+    template = args.model_cmd or settings.for_plan(plan)["run"].get("model_cmd")
+    if not template:
+        _err("give --model-cmd, or set [run] model_cmd in " + str(settings.config_path())
+             + ' (for example "claude -p --model {model}")')
+        return 2
     try:
-        return run_loop(plan, args.model_cmd, budget=args.budget, max_retries=args.retries)
+        return run_loop(plan, template, budget=args.budget, max_retries=args.retries)
     except EOFError:
         _err(f"input closed before the designer answered; resume with `gandalf run --out \"{plan.plan_dir}\" ...` "
              "or carry on with `gandalf prompt`")
@@ -291,7 +397,7 @@ def cmd_repair(args) -> int:
     return 0
 
 
-# --- PR monitoring (optional module, §5.11) ---------------------------------------------------
+# --- PR monitoring (optional module) ---------------------------------------------------
 
 def _after_change(plan: PlanState, e: dict) -> None:
     """Say what happened to a change and bring the rendered plan up to date."""
@@ -378,14 +484,21 @@ def cmd_monitor(args) -> int:
             if e is None:
                 _out(f"{args.target} still matches its spec: nothing on {args.branch} reaches other PRs.")
                 return 0
-            if e["status"] == "judging" and args.model_cmd:
-                e, errors = _judge_with_model(plan, e, args.model_cmd, args.retries)
+            template = args.model_cmd or settings.for_plan(plan)["run"].get("model_cmd")
+            if e["status"] == "judging" and template:
+                model, _ = settings.model_for(settings.for_plan(plan), "monitor")
+                e, errors = _judge_with_model(plan, e, settings.command_for(template, model), args.retries)
                 if errors:
                     _err(f"{e['id']}: the model's judgement was rejected ({len(errors)} problem(s)):")
                     for x in errors:
                         print(f"  - {x}", file=sys.stderr)
                     return 1
             if e["status"] == "judging":
+                rules = [s for s in e["signals"] if s["rule"]]
+                if rules:      # say so now, not only once the judgement comes back
+                    _out(f"{e['id']}: {len(rules)} rule break(s) on {args.branch}, which no judgement can accept:")
+                    for s in rules:
+                        _out(f"  {s['id']} {s['what']}")
                 _out(f"{e['id']}: {len(monitor.judged(e))} signal(s) on {args.branch} for a model to judge:")
                 for s in monitor.judged(e):
                     _out(f"  {s['id']} {s['what']}")
@@ -452,6 +565,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--title", help="short feature name, used for the plan folder")
     s.add_argument("--supporting", nargs="*", help="supporting files (briefs, notes, mockups)")
     s.add_argument("--full", action="store_true", help="always produce the full tier")
+    s.add_argument("--model", action="append", metavar="STAGE=VALUE",
+                   help="run a stage on a tier (strong, standard, fast) or a named model; repeatable")
+    s.add_argument("--tier", action="append", metavar="TIER=MODEL", help="the model behind a tier; repeatable")
+    s.add_argument("--escalate-after", type=int, metavar="N",
+                   help="rejections in a row before a stage moves up a tier (0 turns it off)")
     s.set_defaults(func=cmd_scan)
 
     r = sub.add_parser("run", help="plan start to finish with a model command, asking you questions here")
@@ -461,7 +579,13 @@ def build_parser() -> argparse.ArgumentParser:
     rfeat.add_argument("--feature-text", help="the feature description itself")
     r.add_argument("--title", help="short feature name, used for the plan folder")
     r.add_argument("--supporting", nargs="*", help="supporting files")
-    r.add_argument("--model-cmd", required=True, help='command that reads a prompt on stdin and prints JSON, e.g. "claude -p"')
+    r.add_argument("--model-cmd", help='command that reads a prompt on stdin and prints JSON; {model} becomes '
+                                        'each stage\'s model, e.g. "claude -p --model {model}" (default: [run] model_cmd in the settings file)')
+    r.add_argument("--model", action="append", metavar="STAGE=VALUE",
+                   help="run a stage on a tier (strong, standard, fast) or a named model; repeatable")
+    r.add_argument("--tier", action="append", metavar="TIER=MODEL", help="the model behind a tier; repeatable")
+    r.add_argument("--escalate-after", type=int, metavar="N",
+                   help="rejections in a row before a stage moves up a tier (0 turns it off)")
     r.add_argument("--budget", type=int, default=60_000, help="max characters of repo excerpts per prompt")
     r.add_argument("--retries", type=int, default=3, help="re-prompts allowed when output fails validation")
     r.add_argument("--full", action="store_true", help="always produce the full tier")
@@ -480,9 +604,26 @@ def build_parser() -> argparse.ArgumentParser:
     sm.add_argument("stage", choices=(*MODEL_STAGES, "approval", "answers"))
     sm.add_argument("file", help="JSON file ('-' for stdin)")
     sm.add_argument("--out", required=True, help="plan folder")
+    sm.add_argument("--model", help="the model that produced it, if not the one the settings name")
     sm.set_defaults(func=cmd_submit)
 
+    md = sub.add_parser("models", help="show or change which model runs each stage of a plan")
+    md.add_argument("--out", required=True, help="plan folder")
+    md.add_argument("--set", action="append", metavar="STAGE=VALUE", help="a tier or a model for a stage; repeatable")
+    md.add_argument("--tier", action="append", metavar="TIER=MODEL", help="the model behind a tier; repeatable")
+    md.add_argument("--escalate-after", type=int, metavar="N",
+                    help="rejections in a row before a stage moves up a tier (0 turns it off)")
+    md.add_argument("--json", action="store_true", help="print stage -> model as JSON")
+    md.set_defaults(func=cmd_models)
+
+    cf = sub.add_parser("config", help="show the model settings a new plan would get")
+    cf.add_argument("--init", action="store_true", help="write a starter settings file")
+    cf.add_argument("--json", action="store_true", help="print the resolved settings as JSON")
+    cf.set_defaults(func=cmd_config)
+
     rd = sub.add_parser("render", help="write the plan files once every stage is complete")
+    rd.add_argument("--split", action="store_true",
+                    help="also write one self-contained spec per PR under prs/, for a builder that takes one file")
     rd.add_argument("--out", required=True, help="plan folder")
     rd.set_defaults(func=cmd_render)
 
@@ -496,7 +637,7 @@ def build_parser() -> argparse.ArgumentParser:
     rp.set_defaults(func=cmd_repair)
 
     dv = sub.add_parser("deliver", help="record what another team built for an external dependency (E-n)")
-    dv.add_argument("dependency", help="the external dependency, e.g. E-1")
+    dv.add_argument ("dependency", help="the external dependency, e.g. ")
     dv.add_argument("--out", required=True, help="plan folder")
     dv.add_argument("--details", required=True,
                     help="file saying what was built: setting names, service details, limits, answers to its open questions")
@@ -505,7 +646,7 @@ def build_parser() -> argparse.ArgumentParser:
     dv.add_argument("--merged", default="", help="comma-separated PRs that have merged, e.g. PR-01,PR-02")
     dv.set_defaults(func=cmd_deliver)
 
-    mo = sub.add_parser("monitor", help="optional: compare a PR's branch with its spec and reconcile changes (§5.11)")
+    mo = sub.add_parser("monitor", help="optional: compare a PR's branch with its spec and reconcile changes")
     mo.add_argument("action", choices=("on", "off", "check", "prompt", "submit", "approve", "reject", "history"))
     mo.add_argument("target", nargs="?", help="the PR to check (PR-03), or a change (CH-2)")
     mo.add_argument("file", nargs="?", help="submit: the model's reply (JSON file, '-' for stdin); "
@@ -526,9 +667,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except (GuardError, FileNotFoundError, OldPlanError, PlanExistsError) as exc:
+    except (GuardError, FileNotFoundError, OldPlanError, PlanExistsError, SettingsError) as exc:
         _err(str(exc))
         return 2
+    except BrokenPipeError:              # the reader went away (`gandalf prompt | head`): not a bug
+        return 0
     except Exception as exc:  # a GANDALF bug: log it with the plan when there is one
         where = f"gandalf {args.command}"
         try:

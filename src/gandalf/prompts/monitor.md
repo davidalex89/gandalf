@@ -38,8 +38,10 @@ validated by code; anything that breaks these rules is sent back.
   migration says what data changes in its `schema_change`.
 - `contracts`: any contract the code now has in a different form, with its exact new
   `body` (same `id`, `name`, `kind`, `language`; `why` may say what changed).
-- `contradicts`: design decisions (`DEC-n`) the change goes against, with
-  `design_change` saying what the design would have to change. The designer decides.
+- `contradicts`: the ids of the design decisions the change goes against, as strings
+  (`["DEC-2"]`), and beside it one `design_change` string saying what the design would
+  have to change. The designer decides. (A judge once wrote each entry as an object
+  carrying its own design change, which the check refuses.)
 - If no signal is a `change` (all `harmless` or `unfinished`): `summary` "" (or one line
   on what's unfinished), and `prs`, `contracts`, `contradicts` empty.
 

@@ -1,4 +1,4 @@
-"""Deterministic repo scan: the first of the two scan passes (DESIGN.md §5.1, D-48).
+"""Deterministic repo scan: the first of the two scan passes.
 
 ``scan_repo`` reads manifests, config and directory structure and returns facts, each
 with file evidence. Whatever it cannot determine is listed under ``unknowns`` so it can
@@ -151,6 +151,8 @@ def scan_repo(info: RepoInfo) -> dict:
             test_cmds.append(d.fact(cmd, *evidence, kind="conventional"))
             workspaces[directory]["test_commands"].append(cmd)
         if here + "manage.py" in names:
+            if any(f["value"] == "Django" for f in frameworks):     # the framework's own runner
+                runners.append(d.fact("manage.py test", here + "manage.py", kind="conventional"))
             cmd = d.in_dir(directory) + "python manage.py test"
             test_cmds.append(d.fact(cmd, here + "manage.py", kind="conventional"))
             workspaces[directory]["test_commands"].append(cmd)
@@ -187,7 +189,7 @@ def scan_repo(info: RepoInfo) -> dict:
             if here + "src/main.rs" in names:
                 run_cmds.append(d.fact(d.in_dir(directory) + "cargo run", here + "src/main.rs", kind="conventional"))
             if not workspaces[directory]["frameworks"] and "hyper" in local_other:
-                # no framework in Cargo.toml, but the crate serves HTTP on hyper directly (seventh eval run, E-27)
+                # no framework in Cargo.toml, but the crate serves HTTP on hyper directly
                 frameworks.append(d.fact("hyper (Rust HTTP library, no framework)", *local_other["hyper"], kind="observed"))
                 workspaces[directory]["frameworks"].append("hyper (Rust HTTP library, no framework)")
         if here + "Gemfile" in names and ("rspec" in local_other or "rspec-rails" in local_other):
@@ -204,7 +206,7 @@ def scan_repo(info: RepoInfo) -> dict:
             test_cmds.append(d.fact(full, here + manifest, kind="conventional"))
             workspaces[directory]["test_commands"].append(full)
 
-    for cmd, evidence in d.ci_commands(root, files):     # language-neutral (D-113)
+    for cmd, evidence in d.ci_commands(root, files):     # language-neutral
         declared.append(d.fact(cmd, evidence, kind="ci"))
         if d.TEST_WORDS.search(cmd) and not re.search(r"\b(install|ci|setup|merge-reports)\b", cmd):
             test_cmds.append(d.fact(cmd, evidence, kind="ci"))

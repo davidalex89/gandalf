@@ -36,6 +36,13 @@ particular:
   include a leaf tagged `breaking`.
 - `enabling` PRs switch a design capability on. Name the `capability` exactly as in the
   design, and give `switch_off`: how to turn it back off.
+- `release` PRs change what users or clients observe without switching a capability on:
+  readers or writers moving to a new store, the expand or contract half of a pair, a
+  cutover, a removal. They may hold leaves tagged `breaking`. Say in `behaviour_change`
+  what users or clients see differently once it is deployed, give `rollback` as
+  `{"how": "..."}` (how to undo it, or that the step after it is the only way back), and add
+  the order-of-operations step that deploys or migrates it. A release PR never names a
+  `capability`.
 - `precursor` PRs fix an existing issue (`X-n`) before the work.
 
 **Say what must be true, never how to check it.** GANDALF adds the standard statements
@@ -96,7 +103,10 @@ test or lint commands.
 - `contracts_used` / `contracts_exposed`: contract ids; every contract is exposed by
   exactly one PR.
 - `changes`: each file to `create`, `modify` or `delete`, what changes, which pattern to
-  follow, and which leaf it implements. Say what changes in the file, not the code that does it. `reuse`: existing code the builder must use
+  follow, and which leaf it implements. Say what changes in the file, not the code that does it.
+  Write each function, class or method you name as code (`name()`, `Class.method`, or in
+  backticks): the reach report seeds on names written as code, and a plain word like copy
+  or transfer is prose to it. `reuse`: existing code the builder must use
   rather than recreate (cited). A switch-on changes what existing tests assert (a list
   gains an option, a hidden element shows): list each existing test file that asserts
   the behaviour the PR changes as a `modify` change saying what it must assert now,

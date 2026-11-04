@@ -1,7 +1,7 @@
 """Deterministic plan checks: sequencing, forward state, coverage and PR rules.
 
-DESIGN.md §5.6 (sequence), §5.9 (cross-stage checks), §7 (inert/enabling), §8 (size,
-breaking changes, migrations, flags), §9.1 (runnable checks), §10.5 (tier).
+Covers the sequence, cross-stage checks, inert and enabling PRs, size, breaking changes,
+migrations, flags, runnable checks and the tier.
 None of this trusts the model: orders, waves, lanes, "needed by", path tags and tiers are
 computed here.
 """
@@ -19,14 +19,14 @@ from gandalf.repo import SKIP_DIRS, iter_files
 from gandalf.scan.detectors import MIGRATION_DIR, iac_kind_by_name
 
 SIZE_BANDS = (("Small", 150), ("Medium", 350), ("Large", 500))
-# A PR changing more than this many files says why it's kept whole (D-153). Size in lines is
+# A PR changing more than this many files says why it's kept whole. Size in lines is
 # the model's own estimate, so it is shown as a band and never gated on; a single-leaf PR
-# says why it stays separate (D-69, D-153): logical containment over fragmentation (D-13).
+# says why it stays separate: logical containment over fragmentation.
 LARGE_PR_FILES = 10
 # The token that marks the test runner in a known test command, so a targeted run of
 # the same runner can be recognised.
 RISK_LEAF_TAGS = {"migration", "auth", "breaking"}
-# Secret scanners a repo may run; if it does, every PR's spec says it must pass (D-120).
+# Secret scanners a repo may run; if it does, every PR's spec says it must pass.
 SECRET_SCANNERS = re.compile(r"\b(gitleaks|detect-secrets|trufflehog|ggshield|git-secrets)\b")
 
 
@@ -67,7 +67,7 @@ def cite_path(cite: str) -> str:
 class RepoView:
     """Read-only view of the target repo's files, for grounding checks. Given the commit a
     plan was made against, it reads that commit from git, so the answer never depends on
-    what's checked out (D-146). Without one (a folder that isn't a git repo, or a plan made
+    what's checked out. Without one (a folder that isn't a git repo, or a plan made
     on uncommitted changes) it reads the files on disk."""
 
     def __init__(self, root: Path, commit: str | None = None):
@@ -79,7 +79,7 @@ class RepoView:
             return
         self.files = {p.as_posix() for p in iter_files(root)}
         # The scan skips folders that usually hold generated output (coverage, build, ...),
-        # but a file git tracks is real source wherever it lives (D-94).
+        # but a file git tracks is real source wherever it lives.
         self.tracked = _tracked_files(root)
 
     @classmethod
@@ -109,7 +109,7 @@ class RepoView:
 
 
 def iac_kind(path: str, scan: dict) -> str | None:
-    """The infrastructure-as-code kind of a path, from the scan or its name (D-90)."""
+    """The infrastructure-as-code kind of a path, from the scan or its name."""
     path = cite_path(path)
     for item in scan.get("infrastructure_as_code", []):
         if path == item["path"] or (item["path"].endswith("/") and path.startswith(item["path"])):
@@ -118,7 +118,7 @@ def iac_kind(path: str, scan: dict) -> str | None:
 
 
 def is_client(e: dict) -> bool:
-    """Another team's app that adopts this plan's work (D-127), not something it needs."""
+    """Another team's app that adopts this plan's work, not something it needs."""
     return e.get("kind") == "client"
 
 
@@ -128,9 +128,9 @@ def external_uses(pr: dict) -> list[tuple[str, str | None]]:
 
 
 def external_gates(prs: list[dict]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
-    """The external dependencies each enabling PR's work uses (D-92). Returns (merge gates,
+    """The external dependencies each enabling PR's work uses. Returns (merge gates,
     switch-on gates): a PR switched on by configuration can merge before they're ready;
-    the step that sets its configuration waits instead (D-109)."""
+    the step that sets its configuration waits instead."""
     closure = transitive_deps(prs)
     by_id = {p["id"]: p for p in prs}
     merge, switch = {}, {}
@@ -142,7 +142,7 @@ def external_gates(prs: list[dict]) -> tuple[dict[str, list[str]], dict[str, lis
 
 
 def check_switch_on_steps(prs: list[dict], sequence: dict, switch_gates: dict[str, list[str]]) -> Report:
-    """A PR switched on by configuration has a step that sets it, after its dependencies are ready (D-109)."""
+    """A PR switched on by configuration has a step that sets it, after its dependencies are ready."""
     report = Report()
     steps = sequence["order_of_operations"]
     configured = {p["id"] for p in prs if p.get("switched_on_by")}
@@ -237,7 +237,7 @@ def needed_by(prs: list[dict]) -> dict[str, list[str]]:
 
 
 def waves(prs: list[dict], order: list[str]) -> list[list[str]]:
-    """The time axis (R-04, D-150): wave 1 is every PR with no dependency, wave n+1 every PR
+    """The time axis (R-04): wave 1 is every PR with no dependency, wave n+1 every PR
     whose dependencies have all merged by wave n. Everything in a wave can start together."""
     by_id = {p["id"]: p for p in prs}
     wave: dict[str, int] = {}
@@ -251,7 +251,7 @@ def waves(prs: list[dict], order: list[str]) -> list[list[str]]:
 
 
 def lanes(prs: list[dict], order: list[str]) -> list[list[str]]:
-    """The track axis (D-150): a lane is a chain one builder can take end to end. Each PR
+    """The track axis: a lane is a chain one builder can take end to end. Each PR
     extends the first lane whose last PR it depends on, or opens a new lane; a PR that joins
     two chains extends one and the other lane ends. The number of lanes is how many builders
     can usefully work at once."""
@@ -312,7 +312,7 @@ def forward_state(prs: list[dict], order: list[str], repo: RepoView,
             path = cite_path(change["path"])
             if change["action"] == "generate":
                 # produced by the repo's own tooling, whose output and naming the repo's
-                # conventions decide (D-77, D-102): the path, or a folder above it, must be real
+                # conventions decide: the path, or a folder above it, must be real
                 tags[(pid, path)] = "generated by repo tooling"
                 ancestors = [str(a) for a in PurePosixPath(path).parents if str(a) != "."]
                 if not any(repo.is_dir(p) or repo.exists(p) or any(r.startswith(p + "/") for r in reachable)
@@ -321,6 +321,9 @@ def forward_state(prs: list[dict], order: list[str], repo: RepoView,
                         f"{pid}: generates into {path}, but neither it nor any folder above it is in the repo "
                         "or created by this PR or one it depends on. Name the folder the repo's tool writes "
                         "into, or the path the repo's convention gives")
+                # a new file the tool writes (a migration) is provided from here on, like a create
+                if PurePosixPath(path).suffix and not repo.exists(path) and not repo.is_dir(path):
+                    created_by.setdefault(path, pid)
                 continue
             state = available(path)
             if change["action"] in ("modify", "delete"):
@@ -364,7 +367,7 @@ def forward_state(prs: list[dict], order: list[str], repo: RepoView,
 
 def secret_scanner(scan: dict, context: dict | None) -> str | None:
     """The secret scanner the repo runs, if any (gitleaks, detect-secrets ...): every PR's
-    spec says it must pass (D-120)."""
+    spec says it must pass."""
     cmds = [f["value"] for f in scan.get("declared_commands", [])]
     cmds += [c["command"] for key in ("test_commands", "run_commands", "check_commands")
              for c in (context or {}).get(key) or []]
@@ -400,8 +403,9 @@ def check_plan(*, intent: dict, design: dict, decompose: dict, sequence: dict,
         report.errors.append(f"dependency cycle among: {', '.join(cycle)}")
         order = order + cycle
     closure = transitive_deps(prs)
+    created = {c["path"]: p["id"] for p in prs for c in p["changes"] if c.get("action") == "create"}
 
-    # leaves: every leaf in exactly one PR (§5.6)
+    # leaves: every leaf in exactly one PR
     leaves = {leaf["id"]: leaf for comp in decompose["components"] for leaf in comp["leaves"]}
     leaf_owner: dict[str, list[str]] = defaultdict(list)
     for pr in prs:
@@ -411,7 +415,7 @@ def check_plan(*, intent: dict, design: dict, decompose: dict, sequence: dict,
                 report.errors.append(f"{pr['id']}: unknown leaf {lid}")
         paths = [cite_path(ch["path"]) for ch in pr["changes"]]
         for path in sorted({p for p in paths if paths.count(p) > 1}):
-            # clearer than the forward-state error this used to cause (D-86)
+            # clearer than the forward-state error this used to cause
             report.errors.append(
                 f"{pr['id']}: lists {path} more than once. List each file once per PR, say everything "
                 "that changes in it, and name every leaf it covers in `leaves`")
@@ -430,7 +434,7 @@ def check_plan(*, intent: dict, design: dict, decompose: dict, sequence: dict,
         if len(owners) != 1:
             report.errors.append(f"leaf {lid} must be in exactly one PR (found in {owners or 'none'})")
 
-    # contracts (§9, R-03)
+    # contracts (R-03)
     design_contracts = {c["id"] for c in design["contracts"]}
     exposer: dict[str, list[str]] = defaultdict(list)
     for pr in prs:
@@ -460,7 +464,7 @@ def check_plan(*, intent: dict, design: dict, decompose: dict, sequence: dict,
             wanted = contract_files.get(cid)
             if wanted and not any(cite_path(f) == p or cite_path(f).startswith(p + "/") for f in wanted for p in changed):
                 report.errors.append(f"{pr['id']}: exposes {cid}, whose code lives in {', '.join(wanted)}, but doesn't "
-                                     "change that file: move the contract to the PR that does, or add the change (D-138)")
+                                     "change that file: move the contract to the PR that does, or add the change")
     decision_ids = {d["id"] for d in design["decisions"]}
     capabilities = {c["name"] for c in design["capabilities"]}
     precursor_ids = {x["id"]: x for x in design["precursors"]}
@@ -477,7 +481,7 @@ def check_plan(*, intent: dict, design: dict, decompose: dict, sequence: dict,
                 report.errors.append(
                     f"{pid}: {ch['path']} is infrastructure as code ({kind}). GANDALF never writes it: "
                     "describe what's needed as an external dependency (E-n) in the design, for the team "
-                    "that owns it (§8.6)")
+                    "that owns it")
         uses = external_uses(pr)
         for eid, note in uses:
             if eid not in externals:
@@ -495,24 +499,36 @@ def check_plan(*, intent: dict, design: dict, decompose: dict, sequence: dict,
                 report.errors.append(f"{pid}: inert PRs name their layer")
             if not pr.get("unobservable_how"):
                 report.errors.append(f"{pid}: inert PRs state how they stay unobservable (unobservable_how)")
-            # D-72: inert means nothing changes for users or existing clients
+            # inert means nothing changes for users or existing clients
             if pr["breaking"]["is_breaking"]:
-                report.errors.append(f"{pid}: an inert PR can't be breaking; make it a separate enabling step")
+                report.errors.append(f"{pid}: an inert PR can't be breaking; make it a separate enabling or release step")
             breaking_leaves = [lid for lid in pr["leaves"] if "breaking" in leaves.get(lid, {}).get("risk", [])]
             if breaking_leaves:
                 report.errors.append(
                     f"{pid}: inert, but leaf {', '.join(breaking_leaves)} is tagged breaking: either the leaf "
-                    "isn't breaking (re-tag it in decompose) or it belongs in an enabling PR")
+                    "isn't breaking (re-tag it in decompose) or it belongs in an enabling or release PR")
         elif pr["type"] == "enabling":
             if pr.get("capability") not in capabilities:
                 report.errors.append(f"{pid}: enabling PRs name a design capability (got {pr.get('capability')!r})")
             if not pr.get("switch_off"):
                 report.errors.append(f"{pid}: enabling PRs state how to switch the capability back off")
+        elif pr["type"] == "release":
+            # a step that changes behaviour without switching a capability on: a reader or
+            # writer moving store, the expand or contract of a pair, a removal
+            if not pr.get("behaviour_change"):
+                report.errors.append(f"{pid}: release PRs say what changes for users or clients (behaviour_change)")
+            if not pr.get("rollback"):
+                report.errors.append(f"{pid}: release PRs state how to undo the change (rollback)")
+            if pr.get("capability"):
+                report.errors.append(f"{pid}: release PRs never name a capability; an enabling PR switches one on")
+            if not any(s["after"] == pid for s in sequence["order_of_operations"]):
+                report.errors.append(f"{pid}: release PRs have an order-of-operations step after them saying when "
+                                     "the change deploys or migrates")
         else:  # precursor
             if not any(t in precursor_ids for leaf in pr["leaves"] for t in leaves.get(leaf, {}).get("traces", [])):
                 report.errors.append(f"{pid}: precursor PRs must implement a precursor (X-n)")
         steps = pr["steps"]
-        # buildable steps (D-125): each step's files are this PR's, and every file has a step
+        # buildable steps: each step's files are this PR's, and every file has a step
         paths = [ch["path"] for ch in pr["changes"]]
         for i, st in enumerate(steps, 1):
             for path in st["changes"]:
@@ -531,7 +547,7 @@ def check_plan(*, intent: dict, design: dict, decompose: dict, sequence: dict,
             report.errors.append(f"{pid}: changes the database (a migration), so say what data changes, in "
                                  "plain terms, in schema_change")
         # The line estimate is the model's own number: shown to the reader as a band, never
-        # gated on (D-153). The gates are structural, which code can see.
+        # gated on. The gates are structural, which code can see.
         band = size_band(pr["size"]["production_lines"])
         if band == "Over":
             report.warnings.append(f"{pid}: estimated over 500 production lines"
@@ -539,7 +555,7 @@ def check_plan(*, intent: dict, design: dict, decompose: dict, sequence: dict,
                                       else "; split it where the work divides unless it belongs together, and say why in size_reason"))
         if pr["size"]["files"] != len(pr["changes"]):
             report.warnings.append(f"{pid}: size.files says {pr['size']['files']} but changes lists "
-                                   f"{len(pr['changes'])}; the spec shows the count from changes (D-173)")
+                                   f"{len(pr['changes'])}; the spec shows the count from changes")
         if len(pr["changes"]) > LARGE_PR_FILES and not pr.get("size_reason"):
             report.errors.append(f"{pid}: changes {len(pr['changes'])} files. Say why it's kept whole (size_reason), "
                                  "or split it where the work divides")
@@ -574,8 +590,25 @@ def check_plan(*, intent: dict, design: dict, decompose: dict, sequence: dict,
             report.warnings.append(f"{pid}: breaking change mitigated by: {pr['breaking']['detail']}")
 
         for item in pr["reuse"]:
-            if not repo.exists(item["where"]):
-                report.errors.append(f"{pid}: reuse names {item['where']}, which isn't in the repo")
+            where = item["where"]
+            if repo.exists(where):
+                continue
+            # a file a PR it depends on creates is real reuse once that PR has merged
+            path, _, lines = where.partition(":")
+            maker = created.get(path)
+            if maker and maker in closure.get(pid, set()):
+                if lines:
+                    report.errors.append(f"{pid}: reuse names {where}, a file {maker} creates; "
+                                         "name it without line numbers, which don't exist yet")
+            elif maker:
+                report.errors.append(f"{pid}: reuse names {path}, which {maker} creates, "
+                                     f"but {pid} doesn't depend on {maker}")
+            elif " " in where or "(" in where:
+                report.errors.append(f"{pid}: reuse names {where!r}; a reuse location is a path, with line "
+                                     "numbers if any, and nothing else. A file an earlier PR creates is named "
+                                     "by its path alone")
+            else:
+                report.errors.append(f"{pid}: reuse names {where}, which isn't in the repo")
         for conv in pr["conventions"]:
             if not repo.exists(conv["example"]):
                 report.errors.append(f"{pid}: convention example {conv['example']} isn't in the repo")
@@ -607,7 +640,7 @@ def check_plan(*, intent: dict, design: dict, decompose: dict, sequence: dict,
                                  "step, since nothing waits for it")
     report.extend(check_external_order(design, sequence))
 
-    # every PR boundary is checked in writing (D-78, D-73)
+    # every PR boundary is checked in writing
     covered = {b["after"] for b in sequence.get("boundaries", [])}
     for pid in order:
         if pid not in covered:
@@ -647,7 +680,7 @@ def check_plan(*, intent: dict, design: dict, decompose: dict, sequence: dict,
 
 
 def check_external_order(design: dict, sequence: dict) -> Report:
-    """An external dependency that must come after another is set up after it (D-101)."""
+    """An external dependency that must come after another is set up after it."""
     report = Report()
     steps = sequence["order_of_operations"]
     first = {}
@@ -670,7 +703,7 @@ def check_external_order(design: dict, sequence: dict) -> Report:
 
 def check_coverage(intent: dict, design: dict, decompose: dict, sequence: dict,
                    security: dict | None, previous_sequence: dict | None = None) -> Report:
-    """Two-way coverage (R-01, §5.9)."""
+    """Two-way coverage (R-01)."""
     report = Report()
     known = {o["id"] for o in intent["outcomes"]} | {b["id"] for b in intent["behaviours"]} \
         | {c["id"] for c in design["contracts"]} | {x["id"] for x in design["precursors"]}
@@ -700,7 +733,7 @@ def check_coverage(intent: dict, design: dict, decompose: dict, sequence: dict,
 
 
 def placed_findings(security: dict) -> list[dict]:
-    """Findings whose requirement a PR must build in (D-149): required fixes and the
+    """Findings whose requirement a PR must build in: required fixes and the
     lower-severity "Consider" notes, unless a design change replaces them or an external
     request carries them."""
     return [f for f in security["findings"]
@@ -709,8 +742,8 @@ def placed_findings(security: dict) -> list[dict]:
 
 
 def check_placement(security: dict, sequence: dict, design: dict, previous: dict | None = None) -> Report:
-    """Every fix the security review asks for is built into exactly one PR (D-149), and a
-    replan keeps each fix in the PR that held it before, unless that PR is gone (D-182)."""
+    """Every fix the security review asks for is built into exactly one PR, and a
+    replan keeps each fix in the PR that held it before, unless that PR is gone."""
     report = Report()
     findings = {f["id"]: f for f in security["findings"]}
     to_place = {f["id"] for f in placed_findings(security)}
@@ -730,7 +763,7 @@ def check_placement(security: dict, sequence: dict, design: dict, previous: dict
                     report.errors.append(
                         f"{old['id']}: the previous sequence built {sid} into it and this one moves it to "
                         f"{', '.join(where.get(sid) or ['nowhere'])}; a replan keeps a fix where it was unless that "
-                        "PR is gone (D-182). If the fix now spans PRs, the finding stays listed here and the other "
+                        "PR is gone. If the fix now spans PRs, the finding stays listed here and the other "
                         "PR's changes carry its share of the work")
     for sid in sorted(to_place):
         prs = where.get(sid, [])
@@ -762,9 +795,9 @@ SETTLED_RESPONSES = ("accept", "limitation", "transfer")
 
 
 def settled(intent: dict, design: dict, reviews: list[dict]) -> list[dict]:
-    """What the security and boundary reviewers are shown as already settled (D-124, D-160):
+    """What the security and boundary reviewers are shown as already settled:
     the designer's accepted decisions, the assumptions they approved, known limitations, the
-    brief's own decisions (D-161), and what earlier reviews accepted. A finding may re-open one by its ``ref``, saying what's new."""
+    brief's own decisions, and what earlier reviews accepted. A finding may re-open one by its ``ref``, saying what's new."""
     retired = {r["text"] for r in design.get("retired_assumptions") or []}
     items = [{"ref": d["id"], "what": f"{d['summary']}: {d['decision']}", "settled_by": f"decision ({d['source']['kind']})"}
              for d in design["decisions"] if d["status"] == "accepted"]
@@ -773,7 +806,7 @@ def settled(intent: dict, design: dict, reviews: list[dict]) -> list[dict]:
               if a["text"] not in retired]
     items += [{"ref": lim["summary"], "what": lim["detail"], "settled_by": "known limitation"}
               for lim in design["limitations"]]
-    # the brief's own decisions: the designer's answers restated in product terms (D-161)
+    # the brief's own decisions: the designer's answers restated in product terms
     items += [{"ref": item.get("ref") or item["text"], "what": item["text"],
                "settled_by": f"decision in the brief ({item.get('source', 'designer')})"}
               for item in intent.get("decisions") or []]
@@ -786,7 +819,7 @@ def settled(intent: dict, design: dict, reviews: list[dict]) -> list[dict]:
 
 def earlier_requirements(reviews: list[dict]) -> list[dict]:
     """What the latest earlier review required of PRs (fixes and "Consider" notes). A new
-    review keeps each one or drops it with a reason (D-137), so none disappears silently."""
+    review keeps each one or drops it with a reason, so none disappears silently."""
     if not reviews:
         return []
     n = len(reviews)
@@ -805,7 +838,8 @@ def check_carried(security: dict, earlier: list[dict]) -> Report:
             report.errors.append(f"security: {ref!r} isn't a requirement from the earlier review: copy its ref exactly")
     for f in security["findings"]:
         if f.get("keeps") and not f.get("requirement"):
-            report.errors.append(f"security: {f['id']} keeps {f['keeps']}, so give its requirement")
+            report.errors.append(f"security: {f['id']} keeps {f['keeps']}, so give its requirement; if it has grown "
+                                 "into a design change, drop `keeps`, use `reopens`, and list the earlier finding under `dropped`")
     for ref in sorted(refs - set(kept) - set(dropped)):
         report.errors.append(f"security: earlier requirement {ref} is neither kept nor dropped: restate it as a "
                              "finding with keeps, or add it to dropped with the reason")
@@ -814,7 +848,7 @@ def check_carried(security: dict, earlier: list[dict]) -> Report:
 
 def applied_findings(security: dict) -> list[dict]:
     """Findings a PR must build in as required fixes: medium or above, or anything that
-    would break the brief or a design decision whatever its severity (D-148); mitigated or
+    would break the brief or a design decision whatever its severity; mitigated or
     eliminated, and not a design change (that sends the design back)."""
     return [f for f in security["findings"]
             if (f["severity"] != "low" or f.get("breaks")) and f["response"] in ("mitigate", "eliminate")
@@ -822,7 +856,7 @@ def applied_findings(security: dict) -> list[dict]:
 
 
 def check_security(security: dict, design: dict) -> Report:
-    """The review of the design (D-149): every inventory entry checked, an abuse case for
+    """The review of the design: every inventory entry checked, an abuse case for
     every capability, and each finding answered the way its response requires."""
     report = Report()
     inventory = {n["id"] for n in design["inventory"]}
@@ -856,7 +890,7 @@ def check_security(security: dict, design: dict) -> Report:
         if named and not f.get("breaks") and f["response"] in ("mitigate", "eliminate"):
             report.errors.append(f"security: {f['id']} names {', '.join(named)} but leaves breaks empty: a fix that "
                                  "protects something the brief states names it in breaks and is required whatever "
-                                 "its severity (D-156)")
+                                 "its severity")
         if f.get("breaks") and f["response"] not in ("mitigate", "eliminate"):
             report.errors.append(f"security: {f['id']} breaks {', '.join(f['breaks'])}, so it must be fixed "
                                  "(mitigate or eliminate), not accepted")
@@ -872,7 +906,7 @@ def check_security(security: dict, design: dict) -> Report:
 
 def check_boundary(boundary: dict, sequence: dict) -> Report:
     """The boundary check covers every PR, and every state that doesn't hold has a gap
-    to re-plan around (D-149)."""
+    to re-plan around."""
     report = Report()
     prs = [p["id"] for p in sequence["prs"]]
     checked = [c["after"] for c in boundary["checked"]]
@@ -898,7 +932,7 @@ def check_boundary(boundary: dict, sequence: dict) -> Report:
 
 
 def select_tier(sequence: dict, approved_pauses: list[dict], force_full: bool) -> str:
-    """Light only when every condition in §10.5 holds."""
+    """Light only when every condition for the light tier holds."""
     prs = sequence["prs"]
     if force_full or len(prs) > 2:
         return "full"

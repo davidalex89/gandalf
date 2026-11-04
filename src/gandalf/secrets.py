@@ -1,4 +1,4 @@
-"""No secrets in the repo (D-120): find anything in planned output that looks like a real one.
+"""No secrets in the repo: find anything in planned output that looks like a real one.
 
 A plan may name a secret's setting (``SMTP_URL``) and use empty or obviously fake values
 in examples (``<your-api-key>``, ``user:secret@mail.example.com``, ``test-password``).
@@ -25,7 +25,7 @@ FORMATS = [
 URL_CREDENTIALS = re.compile(r"[a-z][a-z0-9+.-]*://[^/\s:@]+:([^/\s@]+)@([^/\s:?#]+)", re.I)
 # password = "value", api_key: 'value' …
 # The key may end an env-style name (DB_PASSWORD, AWS_SECRET_ACCESS_KEY) and the value may be
-# unquoted, as in a .env line or YAML (0.12.0 QA review, finding 2; D-168).
+# unquoted, as in a .env line or YAML.
 ASSIGNMENT = re.compile(
     r"(?<![A-Za-z0-9])(?:[A-Z0-9_]*_)?(password|passwd|passcode|pwd|secret|secret_key|api_key|apikey|"
     r"access_key|auth_token|token|private_key|client_secret)(?![A-Za-z0-9])[\"']?\s*(?:=>|[:=])\s*"

@@ -1,5 +1,5 @@
-"""Repair the unbuilt part of a plan after a builder reports a mismatch (DESIGN.md §5.10),
-or after an external dependency is delivered differently from its request (§8.6, D-93).
+"""Repair the unbuilt part of a plan after a builder reports a mismatch,
+or after an external dependency is delivered differently from its request.
 
 Merged PRs are frozen and never change. The repo is re-scanned (it has moved on), the
 mismatch is recorded, and every stage from the earliest affected one is archived to
@@ -23,7 +23,7 @@ def parse_report(text: str) -> dict:
     """Parse the fixed GANDALF MISMATCH REPORT shape (PR spec section 14)."""
     if "GANDALF DEVIATION NOTE" in text and "GANDALF MISMATCH REPORT" not in text:
         raise ValueError("this is a deviation note: it records small fixes a builder made inside the "
-                         "PR's own files, the plan stands, and nothing needs repair (D-151)")
+                         "PR's own files, the plan stands, and nothing needs repair")
     found: dict[str, list[str]] = {}
     current = None
     for line in text.splitlines():
@@ -94,7 +94,7 @@ def repair(plan: PlanState, report_path: Path, merged: list[str], from_stage: st
 
 
 def deliver(plan: PlanState, eid: str, details_path: Path, merged: list[str], as_requested: bool) -> str:
-    """Record what another team actually built for an external dependency (D-93)."""
+    """Record what another team actually built for an external dependency."""
     design = plan.stage("design")
     external = {e["id"]: e for e in (design or {}).get("external") or []}
     if eid not in external:

@@ -1,4 +1,4 @@
-"""Deterministic detectors for the repo scan (DESIGN.md §5.1, first pass).
+"""Deterministic detectors for the repo scan (first pass).
 
 Every detector only reports what it can read from files. Each fact carries the file(s)
 it came from as evidence. Nothing here guesses: what can't be read is left for the
@@ -210,7 +210,7 @@ GO_SERVES = re.compile(r"\bhttp\.(ListenAndServe(TLS)?|Serve(TLS)?|NewServeMux|H
 def go_stdlib_http(root: Path, files: list[Path], here: str, limit: int = 1000) -> str | None:
     """The Go file under ``here`` that serves HTTP on the standard library (or, failing that,
     imports net/http), nearest the root: a Go service with no framework in go.mod is a fact
-    with evidence, not an unknown (fourth eval run, E-14). Tests and files past ``limit``
+    with evidence, not an unknown. Tests and files past ``limit``
     are not read."""
     best: tuple | None = None
     seen = 0
@@ -303,7 +303,7 @@ NON_SOURCE_PARENTS = {"vendor", "node_modules", "third_party", "contrib", "packa
 
 
 def infrastructure_roots(files: list[Path]) -> list[str]:
-    """Folders config management makes infrastructure (D-128), as path prefixes."""
+    """Folders config management makes infrastructure, as path prefixes."""
     roots = set()
     for rel in files:
         managed = config_management(rel.as_posix())
@@ -315,9 +315,9 @@ def infrastructure_roots(files: list[Path]) -> list[str]:
 def detect_layers(files: list[Path]) -> dict[str, list[dict]]:
     """Directories named like a layer that hold that layer's kind of file: code for the
     api, models, database and tests layers, components, templates, styles or scripts for the
-    frontend. Deployment code (an Ansible role, D-128), vendored and contributed folders never
+    frontend. Deployment code (an Ansible role), vendored and contributed folders never
     count: a role's handlers/ is not an API and its templates/ are not a frontend, and a Go
-    package named client/ is a library, not a user interface (fourth eval run, E-14)."""
+    package named client/ is a library, not a user interface."""
     skip = infrastructure_roots(files)
     found: dict[str, dict[str, int]] = {layer: Counter() for layer in LAYER_DIRS}
     for rel in files:
@@ -370,7 +370,7 @@ RULE_PATTERNS = [
 
 
 # A package that depends on one of these builds a documentation site: not an app, so its
-# lint and language config are not repo rules and its dev script is not how the app runs (D-176).
+# lint and language config are not repo rules and its dev script is not how the app runs.
 SITE_GENERATORS = ("astro", "@astrojs/starlight", "vitepress", "vuepress", "@docusaurus/core",
                    "nextra", "gatsby", "@11ty/eleventy", "eleventy", "hexo", "mkdocs")
 
@@ -386,7 +386,7 @@ LICENCE_NAME = re.compile(r"(LICEN[CS]E|COPYING|COPYRIGHT)(\.(md|txt|rst))?", re
 def detect_rules(root: Path, files: list[Path], app_dirs: set[str] = frozenset()) -> list[dict]:
     """Rule files at the root, plus lint/format config inside app-like workspace
     packages (library packages are skipped to keep the list readable), plus licence files
-    that cover part of the repo, such as an enterprise folder (D-114)."""
+    that cover part of the repo, such as an enterprise folder."""
     rules = []
     for rel in files:
         if 1 < len(rel.parts) <= 3 and LICENCE_NAME.fullmatch(rel.name):
@@ -487,7 +487,7 @@ def detect_languages(files: list[Path]) -> list[dict]:
 
 
 # Languages whose package files this scan reads. A repo mostly in any other language is
-# still planned: the context stage establishes its stack by reading the code (D-112).
+# still planned: the context stage establishes its stack by reading the code.
 LANGUAGE_MANIFESTS = {
     "Python": ("pyproject.toml", "setup.py", "manage.py", "requirements.txt"),
     "TypeScript": ("package.json",), "JavaScript": ("package.json",), "Vue": ("package.json",),
@@ -518,7 +518,7 @@ def unrecognised_languages(files: list[Path]) -> list[tuple[str, int, int, str]]
 # --- commands from CI (any language) -------------------------------------------------------
 
 CI_FILES = re.compile(r"\.github/workflows/[^/]+\.ya?ml|\.gitlab-ci\.yml|\.circleci/config\.yml")
-# "test", "tests", or a test script named like tools/test-backend or test_api (D-121)
+# "test", "tests", or a test script named like tools/test-backend or test_api
 # shell syntax lines inside a multi-line run block, not commands (case … in, esac, fi, x) …)
 SHELL_STRUCTURE = re.compile(r"^(case|esac|if|then|else|elif|fi|for|while|do|done)\b|;;$|^[\w*|-]+\)$|\bin$")
 TEST_WORDS = re.compile(r"(^|[\s/:.])(tests?([-_][\w-]+)?|pytest|rspec|phpunit|jest|vitest|playwright)(\s|$|:)")
@@ -526,7 +526,7 @@ TEST_WORDS = re.compile(r"(^|[\s/:.])(tests?([-_][\w-]+)?|pytest|rspec|phpunit|j
 
 def ci_commands(root: Path, files: list[Path]) -> list[tuple[str, str]]:
     """Commands the repo's CI runs, as (command, file): language-neutral evidence of how it
-    tests, lints and builds itself (D-113)."""
+    tests, lints and builds itself."""
     out = []
     for rel in files:
         if not CI_FILES.fullmatch(rel.as_posix()):
@@ -616,7 +616,7 @@ REQUIREMENTS_FILE = re.compile(r"(^|/)requirements[\w.-]*\.(txt|in)$")
 MIGRATION_DIR = re.compile(r"(^|/)(migrations?|alembic/versions|db/migrate)/", re.I)
 
 
-# --- infrastructure as code (§8.6, D-90) ------------------------------------------------
+# --- infrastructure as code ------------------------------------------------
 # Cloud and deployment resources, and configuration management, are another team's work: GANDALF never changes these,
 # even inside the target repo. Paths that mark a whole folder as infrastructure.
 IAC_BY_NAME = [
@@ -630,7 +630,7 @@ IAC_BY_NAME = [
     (r"(.*/)?(samconfig\.toml|template\.ya?ml)", "AWS SAM"),
 ]
 FOLDER_KINDS = {"Pulumi", "AWS CDK", "Helm", "Kustomize"}     # the whole folder is the project
-# Configuration management is infrastructure too, even when the product ships it (D-128).
+# Configuration management is infrastructure too, even when the product ships it.
 # `root` is the folder the match makes infrastructure: a Puppet module, an Ansible role,
 # a Chef cookbook, a Salt state tree. Empty means the repo root: only the file is marked.
 CONFIG_MANAGEMENT = [
@@ -641,7 +641,7 @@ CONFIG_MANAGEMENT = [
     (r"(?P<root>(.*/)?cookbooks/[^/]+/).+", "Chef"),
     (r"(?P<root>(.*/)?)(Berksfile|Policyfile\.rb)", "Chef"),
     (r"(?P<root>(.*/)?)([^/]+\.sls|Saltfile)", "Salt"),
-    # GitHub and CI configuration counts too (D-135): repo settings, workflows, code owners
+    # GitHub and CI configuration counts too: repo settings, workflows, code owners
     (r"(?P<root>\.github/).+", "GitHub configuration"),
     (r"(?P<root>)(docs/)?CODEOWNERS", "GitHub configuration"),
     (r"(?P<root>\.(circleci|buildkite|gitlab)/).+", "CI pipeline"),

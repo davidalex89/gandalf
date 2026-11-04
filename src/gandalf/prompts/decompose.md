@@ -6,6 +6,12 @@ Break the approved design into **feature → components → leaf tasks**.
 - Phrase each leaf as a **deliverable**: verb + result + conditions ("Add the favorites
   table with a unique (user_id, project_id) constraint"), not layer work ("database
   changes"). Tag its `layer` and name its `files` where possible.
+- **Grounding:** a leaf lists a file because you read it. For every file that exists
+  today, cite in `evidence` the line or lines the leaf changes or extends (`path:line`
+  or `path:line-line`), found by reading; a new file needs none. Never plan a search
+  ("rewrite any test that inserts two rows"): do the search now and list what you found,
+  or list nothing. A file you only guess needs the change isn't a leaf, and "nothing
+  else needs changing" is for the PR's done-when, which the sequence stage writes.
 - **Stopping rule:** a leaf is final when a builder could do it with no open decision —
   its contract is fixed, its files are named, its outcome is stated. If not, break it
   down further or ask a question.
@@ -29,7 +35,10 @@ Break the approved design into **feature → components → leaf tasks**.
     {"id": "1", "name": "Favorite storage", "leaves": [
       {"id": "1.1", "deliverable": "Add a migration creating favorites with a unique (user_id, project_id)", "layer": "database",
        "files": ["alembic/versions/0002_favorites.py"], "outcome": "Table exists after upgrade", "contracts": ["C-1"],
-       "traces": ["C-1", "B-1"], "risk": ["migration"]}
+       "traces": ["C-1", "B-1"], "risk": ["migration"]},
+      {"id": "1.2", "deliverable": "Register the favorites router after the projects router", "layer": "api",
+       "files": ["app/main.py"], "evidence": ["app/main.py:7"], "outcome": "The routes answer", "contracts": ["C-3"],
+       "traces": ["C-3", "O-1"], "risk": []}
     ]}
   ]
 }

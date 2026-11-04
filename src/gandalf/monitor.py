@@ -1,4 +1,4 @@
-"""PR monitoring (DESIGN.md §5.11, D-129 to D-134): an optional module, off by default.
+"""PR monitoring: an optional module, off by default.
 
 It reads a PR's branch, read-only, and compares it with the PR's spec. Code inside the
 spec's own files is the builder's business; code only flags what other PRs rely on
@@ -96,7 +96,7 @@ def contract_lines(body: str) -> list[str]:
     body = re.sub(r"(?s)/\*.*?\*/", "", body)                # block comments
     lines = [re.sub(r"\s*(\.\.\.|\{\s*\.\.\.\s*\})\s*;?$", "", _squash(line)) for line in body.splitlines()]
     return [line for line in lines if line and not line.startswith(("#", "//"))   # `: ...` is "body here"
-            and not re.match(r"(import\s|from\s+[\w.]+\s+import\s)", line)]       # imports are the repo's (D-139)
+            and not re.match(r"(import\s|from\s+[\w.]+\s+import\s)", line)]       # imports are the repo's
 
 
 # --- signals (code) ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ def _later(prs: list[dict], pid: str) -> set[str]:
 
 
 def find_signals(plan: PlanState, pid: str, branch: dict, repo: Path, done: bool, merged: set[str]) -> list[dict]:
-    """Everything on the branch that other PRs rely on, each with what it reaches (D-132)."""
+    """Everything on the branch that other PRs rely on, each with what it reaches."""
     sequence, design = plan.stage("sequence"), plan.stage("design")
     prs = {p["id"]: p for p in sequence["prs"]}
     pr = prs[pid]
@@ -128,12 +128,12 @@ def find_signals(plan: PlanState, pid: str, branch: dict, repo: Path, done: bool
     signals: list[dict] = []
 
     def add(kind: str, what: str, *, paths=(), reaches=(), approved=(), rule=False, missing=False):
-        # missing: planned work the branch doesn't have, which may be judged "unfinished" (D-136)
+        # missing: planned work the branch doesn't have, which may be judged "unfinished"
         signals.append({"id": f"M-{len(signals) + 1}", "kind": kind, "what": what, "paths": sorted(paths),
                         "reaches": sorted(set(reaches) & unbuilt), "approved": list(approved), "rule": rule,
                         "missing": missing})
 
-    # rules first: never acceptable, whatever the reason (§8.6, §9.2)
+    # rules first: never acceptable, whatever the reason
     for path, code in sorted(status.items()):
         if code == "D":
             continue
@@ -142,6 +142,10 @@ def find_signals(plan: PlanState, pid: str, branch: dict, repo: Path, done: bool
             add("rule", f"{path} is infrastructure ({kind}), which GANDALF never lets a PR change",
                 paths=[path], rule=True)
         found = secrets.find("\n".join(branch["added"].get(path, [])))
+        if TEST_FILE.search(path):
+            # a test logging in with password="password" follows the repo's own fixtures, as many
+            # repositories do; a real key format or a long value in a test still counts
+            found = [f for f in found if not f.startswith("a default ")]
         if found:
             add("rule", f"{path} adds what looks like a real secret ({', '.join(dict.fromkeys(found))})",
                 paths=[path], rule=True)
@@ -156,7 +160,7 @@ def find_signals(plan: PlanState, pid: str, branch: dict, repo: Path, done: bool
             continue
         wanted = contract_lines(c["body"])
         homes = {checks.cite_path(f) for f in c.get("files") or []}
-        own = {p: t for p, t in squashed.items() if not homes or p in homes}   # its own files (D-138)
+        own = {p: t for p, t in squashed.items() if not homes or p in homes}   # its own files
         everything = " ".join(own.values())
         found = [line for line in wanted if line in everything]
         if wanted and len(found) == len(wanted):
@@ -425,7 +429,7 @@ def submit_judgement(plan: PlanState, cid: str, data: dict) -> tuple[dict, list[
                  summary="; ".join(s["what"] for s in rules) + (f". Also: {data['summary']}" if real else ""))
         write_builder_note(plan, e)
     elif not real and unfinished:
-        # missing work: the builder hears what's left, the plan stays, nobody waits (D-136)
+        # missing work: the builder hears what's left, the plan stays, nobody waits
         e.update(status="unfinished", decided_by="model",
                  summary=data["summary"] or f"{e['pr']} isn't finished: {len(unfinished)} planned item(s) missing")
         write_builder_note(plan, e)
@@ -446,7 +450,7 @@ def submit_judgement(plan: PlanState, cid: str, data: dict) -> tuple[dict, list[
 # --- deciding and applying ------------------------------------------------------------------
 
 def _apply(plan: PlanState, e: dict) -> None:
-    """Fold an accepted change into the plan; merged PRs stay frozen (§5.10)."""
+    """Fold an accepted change into the plan; merged PRs stay frozen."""
     data = e["judgement"]
     if data["contradicts"]:
         # a decision changes: the design goes back to the designer, as for a security design change
@@ -474,7 +478,7 @@ def _apply(plan: PlanState, e: dict) -> None:
     plan.replace_stage("sequence", sequence, reason)
     if design != before_design:
         # the design changed: the independent review looks again, and the sequence places
-        # its fixes again while merged PRs stay as they are (§5.11, D-149)
+        # its fixes again while merged PRs stay as they are
         plan.request_review(f"{reason} changed the design")
     changed = [p["id"] for p in data["prs"] if p != next(q for q in before_sequence["prs"] if q["id"] == p["id"])]
     e["applied"] = {"prs": changed, "contracts": [c["id"] for c in data["contracts"]

@@ -3,7 +3,7 @@
 Every rejected submission is matched against a catalogue of known causes, each saying in
 plain words what was caught. Rejected output never enters a plan: each was corrected
 before its stage was accepted. Whether a rejection was the model's mistake or GANDALF's
-own isn't guessed here (D-145).
+own isn't guessed here.
 """
 
 from __future__ import annotations
@@ -36,6 +36,11 @@ CATALOGUE = (
           "Evidence that wasn't a file in the repo (often a question number)"),
     Cause("cite-missing-file", r"which isn't in the repo|example .* isn't in the repo",
           "A citation of a file that doesn't exist in the repo"),
+    Cause("reuse-created-file", r"reuse names .*(, a file \S+ creates; name it without line numbers|"
+                                r"which \S+ creates, but \S+ doesn't depend on)",
+          "Reuse of a file another PR creates, cited with line numbers or without depending on that PR"),
+    Cause("reuse-location", r"a reuse location is a path, with line numbers if any",
+          "A reuse location carrying a note that names no PR, contract or decision, or more than one path"),
     Cause("duplicate-file", r"more than once\. List each file once|which (PR-\d+) creates, but \1 does not depend on \1",
           "A file listed twice in one PR"),
     Cause("secret", r"looks like a real secret",
@@ -76,6 +81,12 @@ CATALOGUE = (
           "A contract that included imports, which the repo's own conventions decide"),
     Cause("contract-file", r"exposes \S+, whose code lives in|name the files its code will live in",
           "A contract placed in a PR that doesn't change the file its code lives in"),
+    Cause("design-patch", r"a decision is never edited|no earlier design to patch|^superseded: |^remove: ",
+          "A design re-run patch that edits or removes a decision, or names ids the design doesn't have"),
+    Cause("replaced-shape", r"is the designer's call, not the design's|goes, so say when",
+          "A design deciding on its own what becomes of the data shape it replaces"),
+    Cause("leaf-grounding", r"which exists, with no evidence: cite the line",
+          "A leaf listing an existing file without citing where in it the change goes"),
     Cause("one-home", r"must be in exactly one PR|must be exposed by exactly one PR|must be numbered under component",
           "A leaf or contract placed in no PR, or in more than one"),
     Cause("schema-change", r"changes the database \(a migration\), so say what data changes",
@@ -114,7 +125,8 @@ CATALOGUE = (
           "A state between PRs left unchecked, or a gap with no re-plan"),
     Cause("fix-citation", r"is a fix, so cite the control it applies",
           "A security fix that doesn't name the control it applies"),
-    Cause("required-check", r"PRs name their layer|PRs state how|enabling PRs name a design capability|precursor PRs must implement",
+    Cause("required-check", r"PRs name their layer|PRs state how|enabling PRs name a design capability|precursor PRs must implement"
+                            r"|release PRs say what changes|release PRs have an order-of-operations step|release PRs never name a capability",
           "A PR missing a check or statement its type requires"),
     Cause("decision-source", r"source \w+ must (reference|name)|source cites .*isn't in the repo|superseded decisions name",
           "A design decision without a valid source"),
@@ -141,9 +153,9 @@ CATALOGUE = (
     Cause("duplicate-id", r"duplicate (PR id|PR slug|id|finding id)|is listed twice|more than once under external",
           "The same id or entry used twice"),
     Cause("route-decision", r"a route pause takes rerun or carry|only a route pause takes",
-          "A review sent the plan back a second time; the designer answers each finding with rerun or carry (D-180)"),
+          "A review sent the plan back a second time; the designer answers each finding with rerun or carry"),
     Cause("fix-moved", r"a replan keeps a fix where it was",
-          "GANDALF's rule: a replan adds to a plan, it does not move a security fix out of the PR that held it (D-182)"),
+          "GANDALF's rule: a replan adds to a plan, it does not move a security fix out of the PR that held it"),
     Cause("unknown-ref", r"unknown|names no leaf|which isn't in this PR|isn't one of the design's capabilities|"
                          r"isn't another external dependency",
           "A reference to something that doesn't exist in the plan"),
@@ -171,7 +183,7 @@ def summarise(entries: list[dict]) -> dict:
             continue
         seen = set()
         for error in e.get("errors", []):
-            if error == "More checks run once these are fixed.":     # a note, not a problem (D-105)
+            if error == "More checks run once these are fixed.":     # a note, not a problem
                 continue
             cause = cause_of(error)
             key = cause.id if cause else "other:" + plain_error(error)

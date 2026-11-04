@@ -1,4 +1,4 @@
-"""A small structural checker for stage outputs (DESIGN.md §11.2, D-51).
+"""A small structural checker for stage outputs.
 
 The standard library has no JSON Schema validator, so stage shapes are declared with
 the few spec classes below. ``check(value, spec)`` returns a list of error strings,
@@ -169,7 +169,7 @@ def _norm_token(value: str) -> str:
 
 def normalise(value: Any, spec: Spec, path: str = "$") -> tuple[Any, list[str]]:
     """Fix obvious variants of allowed values ('stored data' -> 'stored_data') before
-    validation, so a spelling difference isn't a rejection (D-64). Returns the
+    validation, so a spelling difference isn't a rejection. Returns the
     normalised value and a note per change; never changes anything else."""
     notes: list[str] = []
 

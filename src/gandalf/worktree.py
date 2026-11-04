@@ -1,4 +1,4 @@
-"""Run the repo's own test command in an isolated git worktree (DESIGN.md §8.4, §8.5).
+"""Run the repo's own test command in an isolated git worktree.
 
 The worktree is created outside the target repo and removed afterwards, so nothing
 from verification can reach a commit. Only a test command the repo itself defines (as
@@ -34,7 +34,7 @@ def _defined_in(root: Path, command: str, evidence: list[str]) -> bool:
 
 
 def repo_test_command(plan: PlanState) -> str | None:
-    """The repo's own test command, never a model-written one (§8.4, D-168): a scan fact, or a
+    """The repo's own test command, never a model-written one: a scan fact, or a
     context-stage command whose text appears verbatim in the file it cites as evidence."""
     scan = plan.scan
     known = [c["value"] for c in scan["stack"]["test_commands"]]
@@ -59,7 +59,7 @@ def run_in_worktree(repo: Path, command: str, timeout: int = TIMEOUT_SECONDS) ->
         if add.returncode != 0:
             return add.returncode, f"could not create a worktree: {add.stderr.strip()}"
         # The command runs in its own process group, so a timeout kills the whole tree: killing
-        # only the shell leaves a test runner holding the pipes and the call never returns (D-178).
+        # only the shell leaves a test runner holding the pipes and the call never returns.
         proc = subprocess.Popen(command, shell=True, cwd=worktree, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, start_new_session=True)
         try:

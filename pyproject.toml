@@ -4,12 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gandalf"
-version = "1.0.0"
+version = "2.0.2"
 description = "Grounded Architecture, Narrow Diffs, Agent-Led Flow: turn a feature idea into sequenced, self-contained PR specs grounded in an existing codebase."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = []
+
+[project.optional-dependencies]
+# optional, for the report only: GANDALF runs the same without them
+map = [
+    "tree-sitter>=0.25",
+    "tree-sitter-python>=0.25", "tree-sitter-javascript>=0.25", "tree-sitter-typescript>=0.23.2",
+    "tree-sitter-go>=0.25", "tree-sitter-rust>=0.24.2", "tree-sitter-ruby>=0.23.1",
+    "tree-sitter-java>=0.23.5", "tree-sitter-php>=0.25.1", "tree-sitter-elixir>=0.3.5",
+]
+report = ["typst>=0.15"]
 
 [project.scripts]
 gandalf = "gandalf.cli:main"
@@ -19,7 +29,3 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 gandalf = ["prompts/*.md", "assets/*.png"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-norecursedirs = ["fixtures"]
