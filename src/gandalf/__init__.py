@@ -1,6 +1,6 @@
 """GANDALF: Grounded Architecture, Narrow Diffs, Agent-Led Flow."""
 
-__version__ = "2.0.2"
+__version__ = "2.0.3"
 
 # Version of the plan.json format. Raise it when the structure
 # changes in a way that could break a reader.
