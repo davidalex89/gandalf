@@ -33,13 +33,12 @@ plugin.
 
 ## What a spec looks like
 
-Three pages from a spec for a small feature on a sample repository: the feature as given and
-what it became, the work as a slice map with where each PR lands, and one PR's section.
+Two pages from a spec for a small feature on a sample repository: the feature as given and
+what it became, and the work as a slice map with where each PR lands.
 
 <p align="center">
-<img src="docs/spec-page-1.png" alt="The feature: what was asked for, outcomes, constraints and limitations" width="32%">
-<img src="docs/spec-page-2.png" alt="The work: review first, the slice map, layers touched and where each PR reaches" width="32%">
-<img src="docs/spec-page-3.png" alt="One PR's section: starting state, read first, contracts, changes, steps, done when" width="32%">
+<img src="docs/spec-page-1.png" alt="The feature: what was asked for, outcomes, constraints and limitations" width="46%">
+<img src="docs/spec-page-2.png" alt="The work: review first, the slice map, layers touched and where each PR reaches" width="46%">
 </p>
 
 ## Requirements
