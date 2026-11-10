@@ -60,7 +60,8 @@ def run_in_worktree(repo: Path, command: str, timeout: int = TIMEOUT_SECONDS) ->
             return add.returncode, f"could not create a worktree: {add.stderr.strip()}"
         # The command runs in its own process group, so a timeout kills the whole tree: killing
         # only the shell leaves a test runner holding the pipes and the call never returns.
-        proc = subprocess.Popen(command, shell=True, cwd=worktree, stdout=subprocess.PIPE,
+        # The repo's own test command is a shell string by design; it runs in a throwaway worktree.
+        proc = subprocess.Popen(command, shell=True, cwd=worktree, stdout=subprocess.PIPE,  # nosemgrep: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true
                                 stderr=subprocess.STDOUT, text=True, start_new_session=True)
         try:
             out, _ = proc.communicate(timeout=timeout)

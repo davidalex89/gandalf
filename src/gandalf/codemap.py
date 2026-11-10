@@ -107,11 +107,12 @@ class _Grammars:
         if key not in self.loaded:
             self.loaded[key] = None
             try:
-                module = importlib.import_module(modname)
+                # Module names come from the GRAMMARS table above, never from input.
+                module = importlib.import_module(modname)  # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
                 language = self.ts.Language(getattr(module, fn)())
                 query = _tags_query(module)
                 if base:
-                    query = (_tags_query(importlib.import_module(base)) or "") + (query or "")
+                    query = (_tags_query(importlib.import_module(base)) or "") + (query or "")  # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import
                 if not query:
                     raise LookupError("no tags query in the installed grammar")
                 kinds = []
