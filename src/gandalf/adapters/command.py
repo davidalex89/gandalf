@@ -15,6 +15,7 @@ import sys
 
 from gandalf import prompts
 from gandalf.adapters import extract_json
+from gandalf.stages import describe_next, stage_model, submit
 from gandalf.state import PlanState
 
 MODEL_TIMEOUT = 1800
@@ -113,7 +114,6 @@ def answer_interactively(plan: PlanState, action: dict) -> dict:
 def run_loop(plan: PlanState, model_cmd: str, *, budget: int = 60_000, max_retries: int = 3) -> int:
     """``model_cmd`` may carry ``{model}``: each stage then runs on the model its settings name."""
     from gandalf import settings
-    from gandalf.cli import describe_next, stage_model, submit
     from gandalf.render import RenderError, render_plan
     from gandalf.worktree import run_verification
 

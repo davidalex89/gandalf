@@ -27,7 +27,7 @@ def main() -> int:
         return 0
 
     from gandalf.adapters import extract_json
-    from gandalf.cli import describe_next, escalation_note, submit
+    from gandalf.stages import describe_next, escalation_note, submit
     from gandalf.state import OldPlanError, PlanState
 
     stage, plan_dir = m.group("stage"), Path(m.group("plan"))
