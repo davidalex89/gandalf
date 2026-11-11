@@ -92,6 +92,7 @@ def _lines(repo: Path, path: str) -> list[str]:
         if f.is_file() and f.stat().st_size < 600_000:
             return f.read_text(errors="replace").splitlines()
     except OSError:
+        # unreadable (permissions, a broken link): no lines, so no hints for this file
         pass
     return []
 

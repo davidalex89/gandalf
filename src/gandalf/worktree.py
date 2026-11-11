@@ -70,6 +70,7 @@ def run_in_worktree(repo: Path, command: str, timeout: int = TIMEOUT_SECONDS) ->
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except ProcessLookupError:
+                # the group exited between the timeout and the kill: nothing left to stop
                 pass
             out, _ = proc.communicate()
             return 124, (out or "") + f"\n[timed out after {timeout}s]"
