@@ -273,6 +273,7 @@ def for_plan(plan) -> dict | None:
             if cached.get("key") == key and cached.get("version") == MAP_VERSION:
                 return cached
         except ValueError:
+            # a corrupt or half-written cache: fall through and rebuild it
             pass
     cmap = build(root)
     if cmap is None:

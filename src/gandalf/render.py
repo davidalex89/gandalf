@@ -238,8 +238,8 @@ class Planner:
         unreviewed = self.reach.get("unreviewed") or []
         if unreviewed:
             out += ["### Security-relevant code no review cited", "",
-                    "Reached within two steps but never cited by the security review or a boundary check. "
-                    "Look here first.", ""]
+                    ("Reached within two steps but never cited by the security review or a boundary check. "
+                     "Look here first."), ""]
             for u in unreviewed:
                 step = "" if u["distance"] <= 1 else f", {u['distance']} steps"
                 out.append(f"- {u['pr']} {u['how']} `{u['target']}` ({', '.join(u['categories']) or 'cited'}{step})")
@@ -431,7 +431,6 @@ class Planner:
     # --- PR spec ----------------------------------------------------------------
     def pr_spec(self, pid: str) -> str:
         pr = self.prs[pid]
-        unit = self.unit
         nb = self.derived["needed_by"][pid]
         risk = self.derived["risk"][pid]
         out = [f"# {pid}: {pr['title']}", "", f"**In short:** {pr['summary']}", ""]
@@ -531,8 +530,8 @@ class Planner:
             line += f" (leaf{'s' if len(named) > 1 else ''} {', '.join(named)})"
             out.append(line)
         # the sequence stage paraphrases a leaf, and a load-bearing word can go missing
-        out += ["", "**What the decomposition asked for**, in its own words. A detail named here and not "
-                "above still belongs to this PR:", ""]
+        out += ["", ("**What the decomposition asked for**, in its own words. A detail named here and not "
+                 "above still belongs to this PR:"), ""]
         out.append(_bullets([f"**{lid}** {self.leaves[lid]['deliverable']} → {self.leaves[lid]['outcome']}"
                              + (f" (see {', '.join(f'`{e}`' for e in self.leaves[lid]['evidence'])})"
                                 if self.leaves[lid].get("evidence") else "")
@@ -545,9 +544,9 @@ class Planner:
         if not pr["steps"]:
             out.append("None — order within this change doesn't matter.")
         else:
-            out += ["Build these as one commit each, in order. A fresh session may be given this spec and one "
-                    "step number: it builds only that step, on this PR's branch after the earlier steps' commits, "
-                    "and stops once that step's \"done when\" holds. Section 12 applies once every step is in.", ""]
+            out += [("Build these as one commit each, in order. A fresh session may be given this spec and one "
+                     "step number: it builds only that step, on this PR's branch after the earlier steps' commits, "
+                     "and stops once that step's \"done when\" holds. Section 12 applies once every step is in."), ""]
             for i, st in enumerate(pr["steps"], 1):
                 out += [f"{i}. {st['what']}",
                         f"   - Files: {', '.join(f'`{path}`' for path in st['changes'])}",
@@ -590,8 +589,8 @@ class Planner:
             out += ["", f"Removes flag `{pr['removes_flag']}`."]
         if pr.get("schema_change"):
             out += ["", f"Schema change: {pr['schema_change']}",
-                    "Produce the migration the way this repo does (see Conventions), "
-                    "and make sure it runs before anything reads the change."]
+                    ("Produce the migration the way this repo does (see Conventions), "
+                     "and make sure it runs before anything reads the change.")]
         out.append("")
 
         out += ["## 11. Security", ""]
@@ -623,23 +622,23 @@ class Planner:
         out.append("")
 
         out += ["## 14. If reality doesn't match", "", "Two cases.", "",
-                "**A small difference you can settle inside this PR's own files**: a bug in a file listed "
-                "under Changes, a test that needs adjusting, a repo command that needs another argument. "
-                "If the fix leaves every contract in sections 4 and 5, every decision in section 9 and every "
-                "starting-state fact as written, and adds no dependency or data change, make it and carry on. "
-                "List each one in this note and hand it to the designer with the finished PR. It never goes "
-                "in the repo, a commit message or the PR description. Notes from the PRs this one depends "
-                "on come with this spec, if there were any: read them before the starting state, since a "
-                "note can move where something lives.", "",
+                ("**A small difference you can settle inside this PR's own files**: a bug in a file listed "
+                 "under Changes, a test that needs adjusting, a repo command that needs another argument. "
+                 "If the fix leaves every contract in sections 4 and 5, every decision in section 9 and every "
+                 "starting-state fact as written, and adds no dependency or data change, make it and carry on. "
+                 "List each one in this note and hand it to the designer with the finished PR. It never goes "
+                 "in the repo, a commit message or the PR description. Notes from the PRs this one depends "
+                 "on come with this spec, if there were any: read them before the starting state, since a "
+                 "note can move where something lives."), "",
                 "```text",
                 "GANDALF DEVIATION NOTE",
                 f"PR: {pid}",
                 "- What: <the change, one line> | Where: <file:line> | Why: <what the spec didn't foresee>",
                 "```", "",
-                "**Anything else**: a starting-state fact that isn't true, a contract you can't provide as "
-                "written, a change needed in a file not listed under Changes, a dependency or data change the "
-                "spec doesn't name, a decision that can't hold, infrastructure, a secret. Stop. Do not "
-                "improvise or work around it. Write this report and hand it to the designer:", "",
+                ("**Anything else**: a starting-state fact that isn't true, a contract you can't provide as "
+                 "written, a change needed in a file not listed under Changes, a dependency or data change the "
+                 "spec doesn't name, a decision that can't hold, infrastructure, a secret. Stop. Do not "
+                 "improvise or work around it. Write this report and hand it to the designer:"), "",
                 "```text",
                 "GANDALF MISMATCH REPORT",
                 f"PR: {pid}",
@@ -1266,9 +1265,9 @@ class Planner:
         out += ["", "Reuse, do not recreate:", "", _bullets([f"{r['what']} — `{r['where']}`" for r in pr["reuse"]]), ""]
 
         if pr["steps"]:
-            out += ["**Steps.** One commit each, in order. A fresh session given this section and one step number "
-                    "builds only that step, on this PR's branch after the earlier steps' commits, and stops once that "
-                    "step's \"done when\" holds.", ""]
+            out += [("**Steps.** One commit each, in order. A fresh session given this section and one step number "
+                     "builds only that step, on this PR's branch after the earlier steps' commits, and stops once that "
+                     "step's \"done when\" holds."), ""]
             for i, st in enumerate(pr["steps"], 1):
                 out += [f"{i}. {st['what']}",
                         f"   - Files: {', '.join(f'`{path}`' for path in st['changes'])}",
@@ -1345,8 +1344,8 @@ class Planner:
         if sources:
             out.append(f"- Where the repo defines its tests and checks: {', '.join(f'`{x}`' for x in sources)}.")
         out += ["", f"**Always out of scope.**", ""]
-        out += ["- Adding this plan, its files, or references to them (e.g. \"see PR-03\") to the repo, code comments, "
-                "commit messages or PR descriptions.",
+        out += [("- Adding this plan, its files, or references to them (e.g. \"see PR-03\") to the repo, code comments, "
+                 "commit messages or PR descriptions."),
                 f"- Changing files not listed under a {unit}'s Changes. A small fix inside a listed file or a test file "
                 "that leaves every contract, decision and starting-state fact as written is yours to make: carry on "
                 "and record it in your deviation note. Anything else: stop and report it.", ""]
@@ -1360,10 +1359,10 @@ class Planner:
                 "state, since a note can move where something lives.", "",
                 "```text", "GANDALF DEVIATION NOTE", "PR: <PR-nn>",
                 "- What: <the change, one line> | Where: <file:line> | Why: <what the spec didn't foresee>", "```", "",
-                "Anything else: a starting-state fact that isn't true, a contract you can't provide as written, a "
-                "change needed in a file not listed, a dependency or data change the spec doesn't name, a decision "
-                "that can't hold, infrastructure, a secret. Stop. Do not improvise or work around it. Write this "
-                "report and hand it to the designer:", "",
+                ("Anything else: a starting-state fact that isn't true, a contract you can't provide as written, a "
+                 "change needed in a file not listed, a dependency or data change the spec doesn't name, a decision "
+                 "that can't hold, infrastructure, a secret. Stop. Do not improvise or work around it. Write this "
+                 "report and hand it to the designer:"), "",
                 "```text", "GANDALF MISMATCH REPORT", "PR: <PR-nn>",
                 "Section: <the part of this spec that doesn't match>", "Expected: <what this spec says>",
                 "Found: <what is actually there>", "Evidence: <file:line references, command output>", "```", ""]
@@ -1449,8 +1448,8 @@ class Planner:
         # 8. record
         out += ["## 8. Record", ""] + self.record_lines()
         # appendix: the evidence behind sections 2 to 5
-        out += ["## Appendix", "", "The detail behind the sections above, for whoever needs to check the plan's "
-                "working rather than read the plan.", ""]
+        out += ["## Appendix", "", ("The detail behind the sections above, for whoever needs to check the plan's "
+                 "working rather than read the plan."), ""]
         out += ["### A. Repository detail", ""] + self.repo_context_lines(part="detail")
         out += ["### B. Decomposition", ""] + self.decomposition_lines()[3:] + [""]
         out += self.security_checked_lines()
