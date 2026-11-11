@@ -132,7 +132,7 @@ class _Grammars:
 
 
 COMPONENTS = {".vue", ".svelte"}
-SCRIPT = re.compile(rb"(<script\b[^>]*>)(.*?)(</script\s*>)", re.S | re.I)
+SCRIPT = re.compile(rb"(<script\b[^>]*>)(.*?)(</script\b[^>]*>)", re.S | re.I)
 
 
 def script_blocks(source: bytes) -> bytes:
