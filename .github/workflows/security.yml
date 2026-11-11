@@ -18,6 +18,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: dependency review
+        # Diffs the dependency graph against the base branch and fails the PR
+        # if a changed pin introduces a known vulnerability of high severity
+        # or worse. Only meaningful on a pull request.
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+
       - name: gitleaks
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
